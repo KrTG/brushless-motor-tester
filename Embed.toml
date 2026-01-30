@@ -1,0 +1,8 @@
+[default.general]
+chip = "STM32F767ZITx"
+
+[default.reset]
+halt_afterwards = false # Start running immediately after flashing
+
+[default.rtt]
+enabled = true          # Enable the RTT terminal

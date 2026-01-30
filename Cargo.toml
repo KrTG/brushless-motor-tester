@@ -1,0 +1,19 @@
+[package]
+name = "motor"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "motor"
+path = "src/main.rs"
+test = false
+harness = false
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+rtt-target = "0.6"
+panic-rtt-target = "0.2"
+stm32f7xx-hal = { version = "0.8", features = ["stm32f767", "rt"] }
+dshot-frame = "0.2"
+fugit = "0.3"

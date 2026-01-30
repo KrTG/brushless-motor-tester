@@ -1,0 +1,30 @@
+# --- Rust ---
+# The target directory contains build artifacts
+/target
+
+# --- Cargo ---
+# Cargo.lock is usually tracked for binary crates (like this one), 
+# but uncomment the next line if you want to exclude it.
+# Cargo.lock
+
+# --- Embedded/Tools ---
+# Embed.toml logs (if any are generated)
+*.log
+
+# --- IDEs ---
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# IntelliJ
+.idea/
+*.iml
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,9 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# This flag tells LLVM to specifically optimize for the M7 core
+rustflags = [
+  "-C", "target-cpu=cortex-m7",
+  "-C", "link-arg=-Tlink.x",
+]
