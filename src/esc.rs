@@ -1,6 +1,5 @@
 use dshot_frame::{BidirectionalDshot, ErpmTelemetry, Frame};
 
-use rtt_target::rprintln;
 use stm32f7xx_hal::{
     gpio::{Alternate, gpioe::PE9},
     pac::{DMA2, TIM1},
@@ -149,17 +148,15 @@ impl EscController {
             }
         }
 
-        // IMPORTANT: Ensure the channel is in Output mode for TX
-        // CC1S = 00 (Output), OC1M = 110 (PWM Mode 1)
+        // 1. Prepare Timer for Transmission
         unsafe {
             let tim1 = &*TIM1::ptr();
-            // Disable DMA request while reconfiguring
             tim1.dier.modify(|_, w| w.cc1de().disabled());
-            // Ensure PWM Mode 1 and Main Output Enable (MOE)
-            tim1.ccmr1_output().modify(|_, w| w.oc1m().bits(0b110));
+            tim1.ccmr1_output()
+                .modify(|_, w| w.cc1s().bits(0b00).oc1m().bits(0b110));
             tim1.bdtr.modify(|_, w| w.moe().set_bit());
             tim1.ccer.modify(|_, w| w.cc1e().set_bit());
-            // Ensure the counter is enabled
+            // Ensure the counter is definitely running
             tim1.cr1.modify(|_, w| w.cen().set_bit());
         }
 
@@ -215,25 +212,105 @@ impl EscController {
                 .enabled() // Enable the DMA stream
         });
 
-        // Trigger the DMA to send the 16 + 1 pulses as configured in the frame buffer
+        // 3. Start Transmission (Sync Timer to DMA)
         unsafe {
             let tim1 = &*TIM1::ptr();
             // Clear any pending interrupt/DMA flags to ensure a fresh start
             tim1.sr.write(|w| w.cc1if().clear_bit().uif().clear_bit());
             // Force a software update event to load shadow registers and reset counter
             tim1.egr.write(|w| w.ug().set_bit());
-            // Small delay to ensure the update event is processed
+            // Small delay to ensure the update event is processed (Crucial on 216MHz F7)
             cortex_m::asm::nop();
             // Finally enable the DMA request
             tim1.dier.modify(|_, w| w.cc1de().enabled());
         }
 
         if self.is_blocking {
-            // Wait for transfer complete
-            // If an error occurs, just panic
             while self.dma2.lisr.read().tcif1().bit_is_clear() {
                 if self.dma2.lisr.read().teif1().bit_is_set() {
-                    panic!("DMA transfer error on Stream 1!");
+                    panic!("DMA TX Error");
+                }
+            }
+
+            // --- TELEMETRY CAPTURE (GCR Decoder) ---
+            if requested {
+                let rx_stream = &self.dma2.st[3]; // Use Stream 3 for RX
+
+                // a. Switch to Input Capture (Both Edges)
+                unsafe {
+                    let tim1 = &*TIM1::ptr();
+                    tim1.dier.modify(|_, w| w.cc1de().disabled());
+                    tim1.ccmr1_input()
+                        .modify(|_, w| w.cc1s().bits(0b01).ic1f().bits(0b0011));
+                    tim1.ccer
+                        .modify(|_, w| w.cc1e().set_bit().cc1p().set_bit().cc1np().set_bit());
+                }
+
+                // 2. Configure RX DMA
+                rx_stream.cr.modify(|_, w| w.en().disabled());
+                while rx_stream.cr.read().en().is_enabled() {}
+
+                self.dma2
+                    .lifcr
+                    .write(|w| w.ctcif3().set_bit().chtif3().set_bit().cteif3().set_bit());
+
+                rx_stream
+                    .par
+                    .write(|w| unsafe { w.bits(self.ccr1_address) });
+                rx_stream
+                    .m0ar
+                    .write(|w| unsafe { w.bits(self.rx_buffer.data.as_ptr() as u32) });
+                rx_stream.ndtr.write(|w| unsafe { w.bits(42) }); // 21 bits * 2 edges
+
+                rx_stream.cr.write(|w| {
+                    w.chsel()
+                        .bits(6)
+                        .dir()
+                        .peripheral_to_memory()
+                        .minc()
+                        .incremented()
+                        .pinc()
+                        .fixed()
+                        .msize()
+                        .bits16()
+                        .psize()
+                        .bits16()
+                        .en()
+                        .enabled()
+                });
+
+                // 4. Trigger RX Capture
+                unsafe {
+                    let tim1 = &*TIM1::ptr();
+                    tim1.sr.write(|w| w.cc1if().clear_bit()); // Clear CC1 flag
+                    tim1.dier.modify(|_, w| w.cc1de().enabled());
+                }
+
+                // 5. Wait for RX completion (with a small timeout/limit)
+                let mut timeout = 20000;
+                while self.dma2.lisr.read().tcif3().bit_is_clear() && timeout > 0 {
+                    timeout -= 1;
+                }
+
+                if timeout > 0 {
+                    // Extract bits from pulses
+                    let mut bits = [false; 21];
+                    let threshold = self.max_duty / 2;
+                    for i in 0..21 {
+                        let falling = self.rx_buffer.data[i * 2];
+                        let rising = self.rx_buffer.data[i * 2 + 1];
+                        let width = rising.wrapping_sub(falling);
+                        bits[i] = width > threshold;
+                    }
+
+                    let decoded_u16 = self.decode_gcr(&bits);
+                    let _ = self.update_telemetry(decoded_u16);
+                }
+
+                // 7. Restore Output mode readiness for next frame
+                unsafe {
+                    let tim1 = &*TIM1::ptr();
+                    tim1.dier.modify(|_, w| w.cc1de().disabled());
                 }
             }
         }

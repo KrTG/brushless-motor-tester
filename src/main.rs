@@ -44,9 +44,12 @@ fn main() -> ! {
         // Time delay: 100ms
         cortex_m::asm::delay(216_000_000 / 10 * 4);
     }
-    panic!("Done beeping");
+    rprintln!("Done beeping");
 
+    // Transition to active control
     esc.set_armed(true);
+    esc.request_info(); // Request ESC info (and clear warning)
+
     loop {
         // Simple 10% throttle with telemetry request
         esc.send_throttle(10.0, true);
