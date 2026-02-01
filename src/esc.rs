@@ -1,7 +1,7 @@
 use dshot_frame::{BidirectionalDshot, ErpmTelemetry, Frame};
 
 use stm32f7xx_hal::{
-    gpio::{Alternate, gpioe::PE9},
+    gpio::{Alternate, OpenDrain, gpioe::PE9},
     pac::{DMA2, TIM1},
     prelude::*,
     timer::{Channel, Timer},
@@ -40,6 +40,7 @@ pub struct EscController {
     is_armed: bool,
     is_blocking: bool,
     max_duty: u16,
+    last_raw_telemetry: u16,
     frame_buffer: DshotBuffer<17>,
     rx_buffer: DshotBuffer<64>,
 }
@@ -47,7 +48,7 @@ pub struct EscController {
 impl EscController {
     pub fn new(
         timer: TIM1,
-        pin: PE9<Alternate<1>>,
+        pin: PE9<Alternate<1, OpenDrain>>,
         frequency: fugit::HertzU32,
         motor_poles: u8,
         clocks: &stm32f7xx_hal::rcc::Clocks,
@@ -93,6 +94,7 @@ impl EscController {
             is_armed: false,
             is_blocking,
             max_duty,
+            last_raw_telemetry: 0,
             frame_buffer: DshotBuffer { data: [0; 17] },
             rx_buffer: DshotBuffer { data: [0; 64] },
         })
@@ -118,6 +120,11 @@ impl EscController {
     /// Helper to request ESC Info
     pub fn request_info(&mut self) {
         self.send_command(6, true);
+    }
+
+    /// Get the last raw 16-bit telemetry frame (GCR decoded)
+    pub fn get_last_telemetry(&self) -> u16 {
+        self.last_raw_telemetry
     }
 
     /// Send a specific DShot command (0-47) using DMA
@@ -304,6 +311,7 @@ impl EscController {
                     }
 
                     let decoded_u16 = self.decode_gcr(&bits);
+                    self.last_raw_telemetry = decoded_u16;
                     let _ = self.update_telemetry(decoded_u16);
                 }
 
