@@ -7,6 +7,8 @@ use stm32f7xx_hal::{
     timer::{Channel, Timer},
 };
 
+use cortex_m::peripheral::SCB;
+
 /// Possible errors from ESC communication
 #[derive(Debug, Clone, Copy)]
 pub enum EscError {
@@ -25,7 +27,7 @@ pub enum DmaState {
     Busy,
 }
 
-#[repr(C, align(4))]
+#[repr(C, align(32))]
 struct DshotBuffer<const N: usize> {
     data: [u16; N],
 }
@@ -33,6 +35,7 @@ struct DshotBuffer<const N: usize> {
 /// EscController handles "Real DShot" using DMA to stream PWM duty cycles.
 pub struct EscController {
     dma2: DMA2,
+    scb: SCB,
     _tim1: Timer<TIM1>,
     ccr1_address: u32,
     motor_poles: u8,
@@ -41,7 +44,7 @@ pub struct EscController {
     is_blocking: bool,
     max_duty: u16,
     last_raw_telemetry: u16,
-    frame_buffer: DshotBuffer<20>, // Increased to 20 for padding (State High)
+    frame_buffer: DshotBuffer<32>, // Increased to 32 for padding
     rx_buffer: DshotBuffer<64>,
 }
 
@@ -53,21 +56,20 @@ impl EscController {
         motor_poles: u8,
         clocks: &stm32f7xx_hal::rcc::Clocks,
         dma2: DMA2,
+        mut scb: SCB,
         is_blocking: bool,
     ) -> Result<Self, EscError> {
         if motor_poles == 0 || motor_poles % 2 != 0 {
             return Err(EscError::InvalidPoles);
         }
 
-        // Enable DMA2 clock. We use the PAC directly because the HAL
-        // usually constrains the RCC before this driver is initialized.
+        // Enable DMA2 clock
         unsafe {
             let rcc = &*stm32f7xx_hal::pac::RCC::ptr();
             rcc.ahb1enr.modify(|_, w| w.dma2en().set_bit());
         }
 
         // Calculate the address of CCR1 before we consume the timer.
-        // On STM32F7, the CCR1 register is usually accessed via a method in the PAC.
         let ccr1_address = timer.ccr1().as_ptr() as u32;
 
         // Configure the timer for PWM using the HAL
@@ -76,17 +78,21 @@ impl EscController {
         let max_duty = pwm.get_max_duty();
         pwm.set_duty(Channel::C1, 0);
 
-        // Release the timer from the HAL PWM wrapper.
+        // Release the timer
         let tim_raw = pwm.release();
 
-        // Ensure TIM1 is in PWM Mode 1 (110) for Channel 1
+        // Ensure TIM1 is in PWM Mode 1 (110) for Channel 1 and Enable Preload (OC1PE)
         unsafe {
             let tim_pac = &*TIM1::ptr();
-            tim_pac.ccmr1_output().modify(|_, w| w.oc1m().bits(0b110));
+            tim_pac
+                .ccmr1_output()
+                .modify(|_, w| w.oc1m().bits(0b110).oc1pe().set_bit());
+            tim_pac.cr1.modify(|_, w| w.arpe().set_bit());
         }
 
         Ok(Self {
             dma2,
+            scb,
             _tim1: tim_raw,
             ccr1_address,
             motor_poles,
@@ -95,7 +101,7 @@ impl EscController {
             is_blocking,
             max_duty,
             last_raw_telemetry: 0,
-            frame_buffer: DshotBuffer { data: [0; 20] },
+            frame_buffer: DshotBuffer { data: [0; 32] },
             rx_buffer: DshotBuffer { data: [0; 64] },
         })
     }
@@ -142,55 +148,56 @@ impl EscController {
 
     /// Internal helper to transmit any DShot frame via DMA
     fn transmit_frame(&mut self, frame: Frame<BidirectionalDshot>, requested: bool) -> DmaState {
-        let tx_stream = &self.dma2.st[5]; // Use Stream 5 for TIM1_UP (Update Event)
+        let tx_stream = &self.dma2.st[5]; // Use Stream 5 for TIM1_UP
 
-        // Check if DMA is busy (Stream 5 is in HISR)
+        // Check internal busy flag or stream enable
         if tx_stream.cr.read().en().is_enabled() {
-            let hisr = self.dma2.hisr.read();
-            if hisr.teif5().bit_is_set() {
-                panic!("DMA TX error detected!");
-            }
-            if !hisr.tcif5().bit_is_set() {
-                return DmaState::Busy;
-            }
+            return DmaState::Busy;
         }
 
         // 1. Prepare Timer for Transmission
         unsafe {
             let tim1 = &*TIM1::ptr();
-            tim1.dier.modify(|_, w| w.ude().disabled()); // Disable Update DMA
+            // Stop everything first
+            tim1.cr1.modify(|_, w| w.cen().clear_bit());
+            tim1.dier.modify(|_, w| w.ude().disabled());
+
+            // Output Mode 1 + Preload Enable
             tim1.ccmr1_output()
-                .modify(|_, w| w.cc1s().bits(0b00).oc1m().bits(0b110));
-            tim1.bdtr.modify(|_, w| w.moe().set_bit());
+                .modify(|_, w| w.cc1s().bits(0b00).oc1m().bits(0b110).oc1pe().set_bit());
+
+            // MOE (Main Output Enable) + OSSR (Off-State Selection for Run mode)
+            // OSSR=1 ensures that when the timer is not outputting (e.g. inactive),
+            // the pin is driven to its configured "Idle" state (Low for PWM Mode 1 with polarity high, effectively).
+            tim1.bdtr.modify(|_, w| w.moe().set_bit().ossr().set_bit());
             tim1.ccer.modify(|_, w| w.cc1e().set_bit());
-            tim1.cr1.modify(|_, w| w.cen().set_bit());
+
+            // Auto-Reload Preload Enable + Repetition Counter 0
+            tim1.cr1.modify(|_, w| w.arpe().set_bit());
+            tim1.rcr.write(|w| w.rep().bits(0));
+
+            // Reset Counter and set CCR1 to 0 (Idle)
+            tim1.cnt.write(|w| w.bits(0));
+            tim1.ccr1().write(|w| w.bits(0));
+
+            // Force Update (UG) to load CCR1=0 into Shadow Register
+            tim1.egr.write(|w| w.ug().set_bit());
+            tim1.sr.write(|w| w.uif().clear_bit());
         }
 
-        // Fill the frame buffer with the duty cycles for the frame
-        // and ensure memory writes are visible to DMA - Data Memory Barrier
-        // each value represents a pulse duration in timer clock cycles
-        // Fill buffer with 0 first (which means 0 duty cycle)
-        // DShot frame is 16 bits. We have a buffer of 20.
-        // We want the last few "pulses" to be 0 duty cycle, effectively holding the line low?
-        // NO - DShot Idle is HIGH (100% duty, or just logic high).
-        // Wait, DShot is digital.
-        // 0 duty cycle = 0V.
-        // The DShot frame ends, and the line should return to IDLE (Low? High?).
-        // DShot Idle is LOW. (Unlike OneShot/PWM which idle Low).
-        // Wait, check spec.
-        // "The signal is low when idle."
-        // So padding with 0 (0% duty cycle) is correct.
-
-        let mut buffer = [0u16; 20];
+        // Fill buffer with DShot frame data
+        let mut buffer = [self.max_duty; 32]; // Initialize with max_duty (HIGH/idle state)
         let duties = frame.duty_cycles(self.max_duty);
         for (i, d) in duties.iter().enumerate() {
-            buffer[i] = *d;
+            buffer[i] = *d; // Overwrite first 16 elements with actual DShot data
         }
-        // Remaining items in buffer are 0, which keeps line LOW.
+        // buffer[16..31] remain at max_duty, maintaining HIGH (idle) after the frame
         self.frame_buffer.data = buffer;
 
-        // IMPORTANT for F7: If D-Cache is enabled, we MUST ensure the buffer is in RAM
-        // and visible to DMA. Data Barrier is a start, but Cache Clean would be better.
+        // Clean Cache
+        unsafe {
+            self.scb.clean_dcache_by_slice(&self.frame_buffer.data);
+        }
         cortex_m::asm::dsb();
         cortex_m::asm::dmb();
 
@@ -198,38 +205,38 @@ impl EscController {
         tx_stream.cr.modify(|_, w| w.en().disabled());
         while tx_stream.cr.read().en().is_enabled() {}
 
-        // Clear Stream 5 flags in HIFCR
+        // Clear flags
         self.dma2
             .hifcr
             .write(|w| w.ctcif5().set_bit().chtif5().set_bit().cteif5().set_bit());
 
-        // Set addresses for Stream 5
-        // We will send the first bit manually and start DMA from the second bit
+        // Full DMA transfer: Buffer[0] to Buffer[End]
         tx_stream
             .par
             .write(|w| unsafe { w.bits(self.ccr1_address) });
         tx_stream
             .m0ar
-            .write(|w| unsafe { w.bits(self.frame_buffer.data.as_ptr().offset(1) as u32) });
+            .write(|w| unsafe { w.bits(self.frame_buffer.data.as_ptr() as u32) });
 
-        // We send 17 bits now (16 data + 1 extra zero for safety/padding)
-        tx_stream.ndtr.write(|w| unsafe { w.bits(17) });
+        tx_stream.ndtr.write(|w| unsafe { w.bits(20) });
 
         tx_stream.cr.write(|w| {
             unsafe {
                 w.chsel()
-                    .bits(6) // TIM1_UP is Channel 6 on Stream 5
+                    .bits(6) // TIM1_UP
                     .msize()
-                    .bits(0b01) // 16-bit memory
+                    .bits(0b01) // 16-bit
                     .psize()
-                    .bits(0b01) // 16-bit peripheral
+                    .bits(0b01) // 16-bit
+                    .pl()
+                    .bits(0b11) // Very High Priority
             }
             .minc()
-            .incremented() // Increment memory address
+            .incremented()
             .pinc()
-            .fixed() // Fixed peripheral address (CCR1)
+            .fixed()
             .dir()
-            .memory_to_peripheral() // Direction
+            .memory_to_peripheral()
             .en()
             .enabled()
         });
@@ -237,32 +244,46 @@ impl EscController {
         // 3. Start Transmission (Sync Timer to DMA)
         unsafe {
             let tim1 = &*TIM1::ptr();
-            // Clear any pending flags
             tim1.sr.write(|w| w.uif().clear_bit());
-            // Reset the internal telemetry state
             self.last_raw_telemetry = 0;
 
-            // CRITICAL: Load first bit manually into CCR1
-            tim1.ccr1()
-                .write(|w| w.bits(self.frame_buffer.data[0] as u32));
+            // Ensure Shadow is 0
+            tim1.ccr1().write(|w| w.bits(0));
+            tim1.egr.write(|w| w.ug().set_bit()); // Move 0 to Shadow
+            tim1.sr.write(|w| w.uif().clear_bit());
 
-            // Enable Update DMA request and THEN trigger the update event
-            // The UG event will latch the manual value into the shadow register
-            // and trigger the DMA to load the NEXT value.
+            // Enable Update DMA request
             tim1.dier.modify(|_, w| w.ude().enabled());
+
+            // Trigger UG again to fire DMA Request
+            // DMA will load Buffer[0] into Preload Register
             tim1.egr.write(|w| w.ug().set_bit());
+            tim1.sr.write(|w| w.uif().clear_bit()); // Clear Trigger Flag
+
+            // START
+            // Cycle 1: Output 0 (Shadow).
+            // End Cycle 1: Update -> Preload (Buffer[0]) moves to Shadow. DMA loads Buffer[1].
+            // Cycle 2: Output Buffer[0].
+            tim1.cr1.modify(|_, w| w.cen().set_bit());
         }
 
         if self.is_blocking {
+            // Wait for DMA Complete
             while self.dma2.hisr.read().tcif5().bit_is_clear() {
+                // Check for error
                 if self.dma2.hisr.read().teif5().bit_is_set() {
                     panic!("DMA TX Error");
                 }
             }
-            // Disable the Update DMA request once transfer is done
+
+            // Cleanup
             unsafe {
                 let tim1 = &*TIM1::ptr();
                 tim1.dier.modify(|_, w| w.ude().disabled());
+                // Stop timer to ensure strict frame separation
+                tim1.cr1.modify(|_, w| w.cen().disabled());
+                // Force CCR1 to 0 just in case
+                tim1.ccr1().write(|w| w.bits(0));
             }
 
             // --- TELEMETRY CAPTURE (GCR Decoder) ---

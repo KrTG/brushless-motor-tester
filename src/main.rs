@@ -16,34 +16,28 @@ fn main() -> ! {
     rprintln!("Real DShot Initializing (DMA-driven)...");
 
     let dp = pac::Peripherals::take().unwrap();
+    let mut cp = cortex_m::Peripherals::take().unwrap();
+
+    // Disable D-Cache to rule out coherency issues
+    cp.SCB.disable_dcache(&mut cp.CPUID);
+    // Enable I-Cache for performance
+    cp.SCB.enable_icache();
 
     let rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();
 
     let gpio = dp.GPIOE.split();
-    let mut pe9_test = gpio.pe9.into_push_pull_output();
 
-    rprintln!("--- HARDWARE TEST ---");
-    cortex_m::asm::delay(216_000_000 * 10);
-    rprintln!("PE9 LOW (Driven to GND) for 5s... Should be 0V");
-    pe9_test.set_low();
-    cortex_m::asm::delay(216_000_000 * 10);
-    rprintln!("PE9 HIGH (Released to Pull-up) for 5s... Should be ~3.3V");
-    pe9_test.set_high();
-    cortex_m::asm::delay(216_000_000 * 10);
-    rprintln!("--- TEST COMPLETE ---");
+    // Configure PE9 for DShot: Pull-up (idle=high), Low speed (reduces ringing, matches Betaflight for F7)
+    let mut pe9_gpio = gpio.pe9.into_push_pull_output();
+    pe9_gpio.set_high(); // Set idle level HIGH before switching to alternate function
 
-    let pe9 = pe9_test
+    let pe9 = pe9_gpio
         .into_alternate::<1>()
-        .set_speed(stm32f7xx_hal::gpio::Speed::VeryHigh);
+        .set_speed(stm32f7xx_hal::gpio::Speed::Low)
+        .internal_pull_up(true);
 
     // DShot300 is the goal.
-    // The HAL calculates timer ticks for 150kHz as 1440.
-    // So if we request 600kHz, it should calculate ~360?
-    // Wait. 216MHz / 1440 = 150kHz.
-    // So current 150,000.Hz() -> 150kHz.
-    // We want 300kHz. So we should request 300,000.Hz().
-    // Wait, previous code was 150k?
     let hertz = 300_000.Hz();
     let motor_poles = 12;
 
@@ -54,22 +48,21 @@ fn main() -> ! {
         motor_poles,
         &clocks,
         dp.DMA2,
+        cp.SCB,
         true, // is_blocking
     )
     .expect("Failed to initialize ESC");
 
-    // Safety Print: Check max_duty calculation
-    // If it's 720 for 300kHz/216MHz, we are good.
-    // If it's 360, we have accidentally halved the clock.
+    // Safety Print
     rprintln!("ESC Max Duty (ARR): {}", esc.max_duty());
 
     rprintln!("Initialized");
     cortex_m::asm::delay(216_000_000 * 2);
 
     rprintln!("Arming ESC (Sending zero throttle)...");
-    for _ in 0..2000 {
+    for _ in 0..4000 {
         esc.send_throttle(0.0, false);
-        cortex_m::asm::delay(216_000_000 / 1000); // 1ms rate
+        cortex_m::asm::delay(216_000_000 / 4000); // 4kHz rate
     }
 
     // NOW we are ready to run
@@ -77,15 +70,15 @@ fn main() -> ! {
 
     rprintln!("Ramping up throttle...");
     // Slow ramp from 0% to 15%
-    for i in 0..150 {
-        let throttle = i as f32 / 10.0; // 0.0, 0.1 ... 15.0
+    for i in 0..600 {
+        let throttle = i as f32 / 40.0; // 0.0 ... 15.0 approx
         esc.send_throttle(throttle, false);
-        cortex_m::asm::delay(216_000_000 / 500); // 2ms per step
+        cortex_m::asm::delay(216_000_000 / 4000); // 4kHz rate
     }
 
     rprintln!("Holding 15%...");
     loop {
         esc.send_throttle(15.0, false);
-        cortex_m::asm::delay(216_000_000 / 500);
+        cortex_m::asm::delay(216_000_000 / 4000); // 4kHz rate
     }
 }
