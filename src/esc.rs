@@ -1,7 +1,7 @@
 use dshot_frame::{BidirectionalDshot, ErpmTelemetry, Frame};
 
 use stm32f7xx_hal::{
-    gpio::{Alternate, OpenDrain, gpioe::PE9},
+    gpio::{Alternate, Output, PushPull, gpioe::PE9},
     pac::{DMA2, TIM1},
     prelude::*,
     timer::{Channel, Timer},
@@ -41,14 +41,14 @@ pub struct EscController {
     is_blocking: bool,
     max_duty: u16,
     last_raw_telemetry: u16,
-    frame_buffer: DshotBuffer<17>,
+    frame_buffer: DshotBuffer<20>, // Increased to 20 for padding (State High)
     rx_buffer: DshotBuffer<64>,
 }
 
 impl EscController {
     pub fn new(
         timer: TIM1,
-        pin: PE9<Alternate<1, OpenDrain>>,
+        pin: PE9<Alternate<1>>,
         frequency: fugit::HertzU32,
         motor_poles: u8,
         clocks: &stm32f7xx_hal::rcc::Clocks,
@@ -95,7 +95,7 @@ impl EscController {
             is_blocking,
             max_duty,
             last_raw_telemetry: 0,
-            frame_buffer: DshotBuffer { data: [0; 17] },
+            frame_buffer: DshotBuffer { data: [0; 20] },
             rx_buffer: DshotBuffer { data: [0; 64] },
         })
     }
@@ -142,15 +142,15 @@ impl EscController {
 
     /// Internal helper to transmit any DShot frame via DMA
     fn transmit_frame(&mut self, frame: Frame<BidirectionalDshot>, requested: bool) -> DmaState {
-        let stream = &self.dma2.st[1];
+        let tx_stream = &self.dma2.st[5]; // Use Stream 5 for TIM1_UP (Update Event)
 
-        // Check if DMA is busy before starting
-        if stream.cr.read().en().is_enabled() {
-            let lisr = self.dma2.lisr.read();
-            if lisr.teif1().bit_is_set() {
-                panic!("DMA transfer error detected from previous frame!");
+        // Check if DMA is busy (Stream 5 is in HISR)
+        if tx_stream.cr.read().en().is_enabled() {
+            let hisr = self.dma2.hisr.read();
+            if hisr.teif5().bit_is_set() {
+                panic!("DMA TX error detected!");
             }
-            if !lisr.tcif1().bit_is_set() {
+            if !hisr.tcif5().bit_is_set() {
                 return DmaState::Busy;
             }
         }
@@ -158,85 +158,111 @@ impl EscController {
         // 1. Prepare Timer for Transmission
         unsafe {
             let tim1 = &*TIM1::ptr();
-            tim1.dier.modify(|_, w| w.cc1de().disabled());
+            tim1.dier.modify(|_, w| w.ude().disabled()); // Disable Update DMA
             tim1.ccmr1_output()
                 .modify(|_, w| w.cc1s().bits(0b00).oc1m().bits(0b110));
             tim1.bdtr.modify(|_, w| w.moe().set_bit());
             tim1.ccer.modify(|_, w| w.cc1e().set_bit());
-            // Ensure the counter is definitely running
             tim1.cr1.modify(|_, w| w.cen().set_bit());
         }
 
         // Fill the frame buffer with the duty cycles for the frame
         // and ensure memory writes are visible to DMA - Data Memory Barrier
         // each value represents a pulse duration in timer clock cycles
-        // how long the line is kept high or low
-        // this is handled by the dshot frame library
-        self.frame_buffer.data = frame.duty_cycles(self.max_duty);
+        // Fill buffer with 0 first (which means 0 duty cycle)
+        // DShot frame is 16 bits. We have a buffer of 20.
+        // We want the last few "pulses" to be 0 duty cycle, effectively holding the line low?
+        // NO - DShot Idle is HIGH (100% duty, or just logic high).
+        // Wait, DShot is digital.
+        // 0 duty cycle = 0V.
+        // The DShot frame ends, and the line should return to IDLE (Low? High?).
+        // DShot Idle is LOW. (Unlike OneShot/PWM which idle Low).
+        // Wait, check spec.
+        // "The signal is low when idle."
+        // So padding with 0 (0% duty cycle) is correct.
 
-        // NOTE: On STM32F7, if the L1 Data Cache is enabled, you MUST either:
-        // 1. Clean the cache here: cortex_m_7::cache::CleanDataCacheByAddress(...)
-        // 2. Or place frame_buffer in a Non-Cacheable (MPU) memory region.
+        let mut buffer = [0u16; 20];
+        let duties = frame.duty_cycles(self.max_duty);
+        for (i, d) in duties.iter().enumerate() {
+            buffer[i] = *d;
+        }
+        // Remaining items in buffer are 0, which keeps line LOW.
+        self.frame_buffer.data = buffer;
+
+        // IMPORTANT for F7: If D-Cache is enabled, we MUST ensure the buffer is in RAM
+        // and visible to DMA. Data Barrier is a start, but Cache Clean would be better.
+        cortex_m::asm::dsb();
         cortex_m::asm::dmb();
 
-        // Disable DMA stream to reconfigure
-        stream.cr.modify(|_, w| w.en().disabled());
-        while stream.cr.read().en().is_enabled() {}
+        // 2. Configure TX DMA (Stream 5)
+        tx_stream.cr.modify(|_, w| w.en().disabled());
+        while tx_stream.cr.read().en().is_enabled() {}
 
-        // Clear DMA flags
-        // ctcif1: Clear Transfer Complete Flag
-        // chtif1: Clear Half Transfer Flag
-        // cteif1: Clear Transfer Error Flag
+        // Clear Stream 5 flags in HIFCR
         self.dma2
-            .lifcr
-            .write(|w| w.ctcif1().set_bit().chtif1().set_bit().cteif1().set_bit());
+            .hifcr
+            .write(|w| w.ctcif5().set_bit().chtif5().set_bit().cteif5().set_bit());
 
-        // Set peripheral address (TIM1 CCR1) and memory address
-        // We're writing from frame_buffer to TIM1 CCR1
-        // so - from Memory Address Register to Peripheral Address Register
-        stream.par.write(|w| unsafe { w.bits(self.ccr1_address) });
-        stream
+        // Set addresses for Stream 5
+        // We will send the first bit manually and start DMA from the second bit
+        tx_stream
+            .par
+            .write(|w| unsafe { w.bits(self.ccr1_address) });
+        tx_stream
             .m0ar
-            .write(|w| unsafe { w.bits(self.frame_buffer.data.as_ptr() as u32) });
+            .write(|w| unsafe { w.bits(self.frame_buffer.data.as_ptr().offset(1) as u32) });
 
-        // Set the frame size (16 pulses + 1 "Shut up" pulse (pause with line kept low)
-        stream.ndtr.write(|w| unsafe { w.bits(17) });
+        // We send 17 bits now (16 data + 1 extra zero for safety/padding)
+        tx_stream.ndtr.write(|w| unsafe { w.bits(17) });
 
-        stream.cr.write(|w| {
-            w.chsel()
-                .bits(6) // Select channel 6 (TIM1_CH1)
-                .dir()
-                .memory_to_peripheral() // Direction: memory to peripheral (TIM1 CCR1)
-                .minc()
-                .incremented() // Source: Incremented: Incremented writes from a sequence of memory addresses
-                .pinc()
-                .fixed() // Destination: Fixed: Fixed writes to a single peripheral address (TIM1 CCR1)
-                .msize()
-                .bits16() // Size of the CCR1 register - 16 bits
-                .psize()
-                .bits16() // Size of the CCR1 register - 16 bits
-                .en()
-                .enabled() // Enable the DMA stream
+        tx_stream.cr.write(|w| {
+            unsafe {
+                w.chsel()
+                    .bits(6) // TIM1_UP is Channel 6 on Stream 5
+                    .msize()
+                    .bits(0b01) // 16-bit memory
+                    .psize()
+                    .bits(0b01) // 16-bit peripheral
+            }
+            .minc()
+            .incremented() // Increment memory address
+            .pinc()
+            .fixed() // Fixed peripheral address (CCR1)
+            .dir()
+            .memory_to_peripheral() // Direction
+            .en()
+            .enabled()
         });
 
         // 3. Start Transmission (Sync Timer to DMA)
         unsafe {
             let tim1 = &*TIM1::ptr();
-            // Clear any pending interrupt/DMA flags to ensure a fresh start
-            tim1.sr.write(|w| w.cc1if().clear_bit().uif().clear_bit());
-            // Force a software update event to load shadow registers and reset counter
+            // Clear any pending flags
+            tim1.sr.write(|w| w.uif().clear_bit());
+            // Reset the internal telemetry state
+            self.last_raw_telemetry = 0;
+
+            // CRITICAL: Load first bit manually into CCR1
+            tim1.ccr1()
+                .write(|w| w.bits(self.frame_buffer.data[0] as u32));
+
+            // Enable Update DMA request and THEN trigger the update event
+            // The UG event will latch the manual value into the shadow register
+            // and trigger the DMA to load the NEXT value.
+            tim1.dier.modify(|_, w| w.ude().enabled());
             tim1.egr.write(|w| w.ug().set_bit());
-            // Small delay to ensure the update event is processed (Crucial on 216MHz F7)
-            cortex_m::asm::nop();
-            // Finally enable the DMA request
-            tim1.dier.modify(|_, w| w.cc1de().enabled());
         }
 
         if self.is_blocking {
-            while self.dma2.lisr.read().tcif1().bit_is_clear() {
-                if self.dma2.lisr.read().teif1().bit_is_set() {
+            while self.dma2.hisr.read().tcif5().bit_is_clear() {
+                if self.dma2.hisr.read().teif5().bit_is_set() {
                     panic!("DMA TX Error");
                 }
+            }
+            // Disable the Update DMA request once transfer is done
+            unsafe {
+                let tim1 = &*TIM1::ptr();
+                tim1.dier.modify(|_, w| w.ude().disabled());
             }
 
             // --- TELEMETRY CAPTURE (GCR Decoder) ---
@@ -246,9 +272,9 @@ impl EscController {
                 // a. Switch to Input Capture (Both Edges)
                 unsafe {
                     let tim1 = &*TIM1::ptr();
-                    tim1.dier.modify(|_, w| w.cc1de().disabled());
+                    // ic1f: Filter = 0 (No filter for fast DShot pulses)
                     tim1.ccmr1_input()
-                        .modify(|_, w| w.cc1s().bits(0b01).ic1f().bits(0b0011));
+                        .modify(|_, w| w.cc1s().bits(0b01).ic1f().bits(0b0000));
                     tim1.ccer
                         .modify(|_, w| w.cc1e().set_bit().cc1p().set_bit().cc1np().set_bit());
                 }
@@ -293,10 +319,11 @@ impl EscController {
                     tim1.dier.modify(|_, w| w.cc1de().enabled());
                 }
 
-                // 5. Wait for RX completion (with a small timeout/limit)
-                let mut timeout = 20000;
+                // 5. Wait for RX completion (With large timeout ~5ms)
+                let mut timeout = 1_000_000;
                 while self.dma2.lisr.read().tcif3().bit_is_clear() && timeout > 0 {
                     timeout -= 1;
+                    cortex_m::asm::nop();
                 }
 
                 if timeout > 0 {
@@ -370,13 +397,18 @@ impl EscController {
         if !self.is_armed {
             return Frame::new(0, request_telemetry).unwrap();
         }
+
         let throttle_pct = throttle_pct.clamp(0.0, 100.0);
+
+        // Critical Fix: 0.0% must map to Command 0 (Disarmed/Stop)
+        // Anything > 0.0% maps to the throttle range [48, 2047]
         let throttle_value = if throttle_pct <= 0.0 {
-            0
+            0 // Command 0
         } else {
             let range = 2047 - 48;
             48 + ((throttle_pct / 100.0) * range as f32) as u16
         };
+
         Frame::new(throttle_value, request_telemetry).expect("Valid throttle")
     }
 
@@ -396,5 +428,9 @@ impl EscController {
             return 0;
         }
         self.last_erpm / pole_pairs
+    }
+
+    pub fn max_duty(&self) -> u16 {
+        self.max_duty
     }
 }
