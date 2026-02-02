@@ -32,8 +32,8 @@ fn main() -> ! {
     let mut pe9_gpio = gpio.pe9.into_push_pull_output();
     pe9_gpio.set_low();
 
-    rprintln!("Set PE9 LOW, waiting 6 seconds...");
-    cortex_m::asm::delay(216_000_000 * 6); // 6 second delay
+    rprintln!("Set PE9 LOW, waiting 3 seconds...");
+    cortex_m::asm::delay(216_000_000 * 3); // 3 second delay
 
     let pe9 = pe9_gpio
         .into_alternate::<1>()
@@ -41,20 +41,16 @@ fn main() -> ! {
 
     // DShot150 as requested
     let hertz = 150_000.Hz();
-
     let mut esc = EscController::new(dp.TIM1, pe9, hertz, &clocks, dp.DMA2);
-
     rprintln!("Initialized");
-    cortex_m::asm::delay(216_000_000 * 2);
 
-    rprintln!("Arming ESC (Sending MotorStop)...");
-    for _ in 0..4000 {
+    rprintln!("Try arming ESC (Sending MotorStop)...");
+    for _ in 0..3000 {
         esc.send_stop();
         cortex_m::asm::delay(216_000_000 / 1000);
     }
-
-    rprintln!("Arming ESC (Sending Throttle 0 / Value 48)...");
-    for _ in 0..1000 {
+    rprintln!("Try arming ESC (Sending Throttle 0)...");
+    for _ in 0..3000 {
         esc.send_throttle(0.0);
         cortex_m::asm::delay(216_000_000 / 1000);
     }
@@ -80,8 +76,13 @@ fn main() -> ! {
         cortex_m::asm::delay(216_000_000 / 1000);
     }
 
-    rprintln!("Stopped. Sending MotorStop for 1 second...");
-    for _ in 0..1000 {
+    rprintln!("Try disarming ESC (Sending Throttle 0)...");
+    for _ in 0..3000 {
+        esc.send_throttle(0.0);
+        cortex_m::asm::delay(216_000_000 / 1000);
+    }
+    rprintln!("Try disarming ESC (Sending MotorStop)...");
+    for _ in 0..3000 {
         esc.send_stop();
         cortex_m::asm::delay(216_000_000 / 1000);
     }
