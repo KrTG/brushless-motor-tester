@@ -11,6 +11,9 @@ use stm32f7xx_hal::{pac, prelude::*};
 fn main() -> ! {
     rtt_init_print!();
 
+    // 10 second delay to allow re-flashing
+    cortex_m::asm::delay(216_000_000 * 10);
+
     let dp = pac::Peripherals::take().unwrap();
     let rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();

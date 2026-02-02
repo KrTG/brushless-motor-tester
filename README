@@ -1,0 +1,7 @@
+1. NormalDshot verification
+
+let frame = Frame::<NormalDshot>::new(1000, false).expect("Valid frame");
+rprintln!("DShot Frame Verification (Value: 1000): {:?}", frame);
+
+10:30:19.232: DShot Frame Verification (Value: 1000): Frame { inner: 33547, _protocol: PhantomData<dshot_frame::NormalDshot> }
+10:30:19.232: Duty Cycles: [960, 480, 480, 480, 480, 480, 960, 960, 480, 480, 480, 480, 960, 480, 960, 960, 0]
