@@ -10,18 +10,40 @@ use stm32f7xx_hal::{pac, prelude::*};
 
 use crate::esc::EscController;
 
+fn arm_esc(esc: &mut EscController) {
+    rprintln!("Arming ESC...");
+    rprintln!("Sending MotorStop...");
+    for _ in 0..3000 {
+        esc.send_stop();
+        cortex_m::asm::delay(216_000_000 / 1000);
+    }
+    rprintln!("Sending Throttle 0...");
+    for _ in 0..3000 {
+        esc.send_throttle(0.0);
+        cortex_m::asm::delay(216_000_000 / 1000);
+    }
+}
+
+fn disarm_esc(esc: &mut EscController) {
+    rprintln!("Disarming ESC...");
+    rprintln!("Sending Throttle 0...");
+    for _ in 0..3000 {
+        esc.send_throttle(0.0);
+        cortex_m::asm::delay(216_000_000 / 1000);
+    }
+    rprintln!("Sending MotorStop...");
+    for _ in 0..3000 {
+        esc.send_stop();
+        cortex_m::asm::delay(216_000_000 / 1000);
+    }
+}
+
 #[entry]
 fn main() -> ! {
     rtt_init_print!();
     rprintln!("Real DShot Initializing (DMA-driven, Single Direction)...");
 
     let dp = pac::Peripherals::take().unwrap();
-    let mut cp = cortex_m::Peripherals::take().unwrap();
-
-    // Disable D-Cache to rule out coherency issues
-    cp.SCB.disable_dcache(&mut cp.CPUID);
-    // Enable I-Cache for performance
-    cp.SCB.enable_icache();
 
     let rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();
@@ -44,23 +66,13 @@ fn main() -> ! {
     let mut esc = EscController::new(dp.TIM1, pe9, hertz, &clocks, dp.DMA2);
     rprintln!("Initialized");
 
-    rprintln!("Try arming ESC (Sending MotorStop)...");
-    for _ in 0..3000 {
-        esc.send_stop();
-        cortex_m::asm::delay(216_000_000 / 1000);
-    }
-    rprintln!("Try arming ESC (Sending Throttle 0)...");
-    for _ in 0..3000 {
-        esc.send_throttle(0.0);
-        cortex_m::asm::delay(216_000_000 / 1000);
-    }
+    arm_esc(&mut esc);
 
     rprintln!("Ramping up throttle (5% to 25%)...");
-    // Ramp from 5% to 25% over 2000 steps (2 seconds)
     for i in 0..2000 {
-        let throttle = 5.0 + (i as f32 / 100.0); // 5.0 ... 25.0
+        let throttle = 5.0 + (i as f32 / 100.0);
         esc.send_throttle(throttle);
-        cortex_m::asm::delay(216_000_000 / 1000); // 1kHz rate
+        cortex_m::asm::delay(216_000_000 / 1000);
     }
 
     rprintln!("Holding 25% for 2 seconds...");
@@ -76,16 +88,8 @@ fn main() -> ! {
         cortex_m::asm::delay(216_000_000 / 1000);
     }
 
-    rprintln!("Try disarming ESC (Sending Throttle 0)...");
-    for _ in 0..3000 {
-        esc.send_throttle(0.0);
-        cortex_m::asm::delay(216_000_000 / 1000);
-    }
-    rprintln!("Try disarming ESC (Sending MotorStop)...");
-    for _ in 0..3000 {
-        esc.send_stop();
-        cortex_m::asm::delay(216_000_000 / 1000);
-    }
+    disarm_esc(&mut esc);
     rprintln!("Done.");
+
     loop {}
 }
