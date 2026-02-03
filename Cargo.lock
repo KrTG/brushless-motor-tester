@@ -164,6 +164,7 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "dshot-frame",
+ "embedded-hal",
  "fugit",
  "panic-rtt-target",
  "rtt-target",
