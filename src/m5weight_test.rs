@@ -19,14 +19,14 @@ fn main() -> ! {
     let mut rcc = dp.RCC.constrain();
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();
 
-    let gpiob = dp.GPIOB.split();
+    let gpio = dp.GPIOF.split();
 
     // I2C Setup: PB8 (SCL), PB9 (SDA)
-    let scl = gpiob.pb8.into_alternate_open_drain();
-    let sda = gpiob.pb9.into_alternate_open_drain();
+    let sda = gpio.pf0.into_alternate_open_drain();
+    let scl = gpio.pf1.into_alternate_open_drain();
 
-    let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c1(
-        dp.I2C1,
+    let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
+        dp.I2C2,
         (scl, sda),
         stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
         &clocks,
@@ -50,13 +50,18 @@ fn main() -> ! {
         rprintln!("Initialization Failed");
     }
 
+    // Set Gap Value
+    sensor.set_gap_value(915.1742).unwrap();
+
     // Read Config
     sensor.query_config();
+
     rprintln!("Firmware Version: {}", sensor.firmware_version);
     rprintln!("LP Filter: {}", sensor.lp_filter);
     rprintln!("Avg Filter: {}", sensor.avg_filter);
     rprintln!("Gap Value: {:.4}", sensor.gap_value);
 
+    cortex_m::asm::delay(216_000_000 * 10); // 10 second delay
     rprintln!("Starting Measurement Loop...");
     loop {
         // Read generic Data struct
@@ -69,6 +74,6 @@ fn main() -> ! {
             data.force_int
         );
 
-        cortex_m::asm::delay(216_000_000 / 10); // ~100ms delay
+        cortex_m::asm::delay(216_000_000); // ~1s delay
     }
 }
