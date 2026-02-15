@@ -1,6 +1,11 @@
 use embedded_hal::adc::OneShot;
 use stm32f7xx_hal::{adc::Adc, pac::ADC1};
 
+const LIPO_DEAD_VOLTAGE: f32 = 2.5;
+const MIN_VOLTAGE_PER_CELL: f32 = 3.3; // critical level - panic
+const WARNING_VOLTAGE_PER_CELL: f32 = 3.5; // warning level - do not use
+const MAX_VOLTAGE_PER_CELL: f32 = 4.35;
+
 pub struct VoltageSensor<PIN, const N: usize = 30> {
     adc: Adc<ADC1>,
     pin: PIN,
@@ -11,6 +16,7 @@ pub struct VoltageSensor<PIN, const N: usize = 30> {
     initialized: bool,
     last_update_ms: u32,
     sample_interval_ms: u32,
+    battery_s: u8,
 }
 
 impl<PIN, const N: usize> VoltageSensor<PIN, N>
@@ -18,8 +24,14 @@ where
     Adc<ADC1>: OneShot<ADC1, u16, PIN>,
     PIN: embedded_hal::adc::Channel<ADC1>,
 {
-    pub fn new(adc: Adc<ADC1>, pin: PIN, voltage_divider: f32, window_duration_ms: u32) -> Self {
-        Self {
+    pub fn new(
+        adc: Adc<ADC1>,
+        pin: PIN,
+        voltage_divider: f32,
+        battery_s: Option<u8>,
+        sample_interval_ms: u32,
+    ) -> Self {
+        let mut instance = Self {
             adc,
             pin,
             voltage_divider,
@@ -28,17 +40,21 @@ where
             sum: 0.0,
             initialized: false,
             last_update_ms: 0,
-            sample_interval_ms: window_duration_ms / (N as u32),
-        }
+            sample_interval_ms,
+            battery_s: battery_s.unwrap_or(0),
+        };
+        instance.sample(0);
+        instance
     }
 
-    pub fn read(&mut self, now_ms: u32) -> f32 {
+    pub fn sample(&mut self, now_ms: u32) {
         let sample = loop {
             match self.adc.read(&mut self.pin) {
                 Ok(sample) => break sample,
                 Err(_) => continue,
             }
         };
+        // STM32 - 3.3 volts, 12 bit ADC
         let val = (sample as f32) * (3.3 / 4095.0) * self.voltage_divider;
 
         if !self.initialized {
@@ -48,7 +64,6 @@ where
             self.sum = val * (N as f32);
             self.initialized = true;
             self.last_update_ms = now_ms;
-            return val;
         }
 
         // Only update the rolling window if the interval has passed
@@ -63,7 +78,65 @@ where
             self.last_update_ms = now_ms;
         }
 
-        // Return the current average
+        if self.battery_s == 0 {
+            self.guess_battery_cells();
+        } else {
+            let smoothed_voltage = self.read_per_cell();
+            if smoothed_voltage > LIPO_DEAD_VOLTAGE && smoothed_voltage < MIN_VOLTAGE_PER_CELL {
+                panic!("Battery voltage is too low!");
+            }
+        }
+    }
+
+    pub fn read(&self) -> f32 {
         self.sum / (N as f32)
+    }
+
+    pub fn read_per_cell(&self) -> f32 {
+        if self.battery_s == 0 {
+            return 0.0;
+        }
+        self.read() / (self.battery_s as f32)
+    }
+
+    pub fn is_low(&self) -> bool {
+        self.battery_s != 0 && self.read_per_cell() < WARNING_VOLTAGE_PER_CELL
+    }
+
+    pub fn is_unstable(&self) -> bool {
+        let mean = self.read();
+        let mut sum_abs_diff = 0.0;
+        for &val in &self.buffer {
+            sum_abs_diff += (val - mean).abs();
+        }
+        let avg_diff = sum_abs_diff / (N as f32);
+        // A threshold of 0.15V average deviation is robust against occasional
+        // ADC noise but will trigger if the voltage is trending or has high ripple.
+        avg_diff > 0.15
+    }
+
+    fn guess_battery_cells(&mut self) {
+        if self.battery_s != 0 {
+            return;
+        }
+        if self.is_unstable() {
+            return;
+        }
+        let voltage = self.read();
+        if voltage <= LIPO_DEAD_VOLTAGE {
+            self.battery_s = 0;
+        } else if voltage < MAX_VOLTAGE_PER_CELL {
+            self.battery_s = 1;
+        } else if voltage < MAX_VOLTAGE_PER_CELL * 2.0 {
+            self.battery_s = 2;
+        } else if voltage < MAX_VOLTAGE_PER_CELL * 3.0 {
+            self.battery_s = 3;
+        } else if voltage < MAX_VOLTAGE_PER_CELL * 4.0 {
+            self.battery_s = 4;
+        } else if voltage < MAX_VOLTAGE_PER_CELL * 6.0 {
+            self.battery_s = 6;
+        } else {
+            self.battery_s = 8;
+        }
     }
 }

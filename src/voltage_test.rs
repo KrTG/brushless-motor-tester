@@ -35,15 +35,36 @@ fn main() -> ! {
 
     let voltage_divider = 11.0;
 
-    // Window duration: 15 seconds (15,000 ms)
-    let mut sensor = VoltageSensor::<_, 30>::new(adc1, voltage_pin, voltage_divider, 15_000);
+    let mut sensor = VoltageSensor::<_, 20>::new(adc1, voltage_pin, voltage_divider, None, 500);
 
     rprintln!("Starting Voltage Test on PC0 (ADC1/10)...");
 
     let mut now_ms = 0;
     loop {
-        let voltage = sensor.read(now_ms);
-        rprintln!("Time Index: {} ms | Voltage: {:.3} V", now_ms, voltage);
+        sensor.sample(now_ms);
+        let voltage = sensor.read();
+        if sensor.is_low() {
+            rprintln!(
+                "Time Index: {} ms | Voltage: {:.2} V ({:.2} V per cell) - LOW",
+                now_ms,
+                voltage,
+                sensor.read_per_cell()
+            );
+        } else if sensor.is_unstable() {
+            rprintln!(
+                "Time Index: {} ms | Voltage: {:.2} V ({:.2} V per cell) - UNSTABLE",
+                now_ms,
+                voltage,
+                sensor.read_per_cell()
+            );
+        } else {
+            rprintln!(
+                "Time Index: {} ms | Voltage: {:.2} V ({:.2} V per cell)",
+                now_ms,
+                voltage,
+                sensor.read_per_cell()
+            );
+        }
 
         // Delay for 500ms
         cortex_m::asm::delay(216_000_000 / 2);
