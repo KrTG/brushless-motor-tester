@@ -16,7 +16,7 @@ const DSHOT_HERTZ: u32 = 150_000;
 const GAP_VALUE: f32 = 915.1742;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
-const MAX_THROTTLE: f32 = 15.0;
+const MAX_THROTTLE: f32 = 25.0;
 
 fn arm_esc(esc: &mut EscController) {
     rprintln!("Arming ESC...");
@@ -92,6 +92,7 @@ fn main() -> ! {
     }
 
     arm_esc(&mut esc);
+
     sensor.init().unwrap();
     sensor.set_gap_value(GAP_VALUE).unwrap();
 

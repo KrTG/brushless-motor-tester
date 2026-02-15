@@ -27,6 +27,12 @@ path = "src/button_test.rs"
 test = false
 harness = false
 
+[[bin]]
+name = "voltage_test"
+path = "src/voltage_test.rs"
+test = false
+harness = false
+
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
