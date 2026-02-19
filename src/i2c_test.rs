@@ -2,22 +2,16 @@
 #![no_main]
 
 mod m5weight;
+mod ui;
 
 use cortex_m_rt::{ExceptionFrame, entry, exception};
-use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_10X20},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
-};
-use heapless::String;
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use stm32f7xx_hal::{pac, prelude::*};
 
 use crate::m5weight::{DEVICE_DEFAULT_ADDR, M5Weight};
+use crate::ui::Ui;
 
 const GRAVITY: f32 = 9.80665;
 
@@ -51,11 +45,16 @@ fn main() -> ! {
 
     // Initialize the display using a proxy from the shared bus
     let interface = I2CDisplayInterface::new(bus.acquire_i2c());
-    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+    let display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
-    display.init().unwrap();
-    display.clear(BinaryColor::Off).unwrap();
-    display.flush().unwrap();
+    let mut ui = Ui::new(display);
+    ui.init().unwrap();
+
+    // Show loading animation for ~2 seconds
+    for _ in 0..100 {
+        ui.display_loading();
+        cortex_m::asm::delay(216_000_000 / 50); // ~50 FPS
+    }
 
     // Initialize the weight sensor using another proxy from the shared bus
     let mut sensor = M5Weight::new(bus.acquire_i2c(), DEVICE_DEFAULT_ADDR);
@@ -70,18 +69,7 @@ fn main() -> ! {
         rprintln!("M5Weight NOT found!");
     }
 
-    let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-
     loop {
-        // Clear the buffer
-        display.clear(BinaryColor::Off).unwrap();
-
-        // Draw a border
-        Rectangle::new(Point::new(0, 0), Size::new(127, 63))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(&mut display)
-            .unwrap();
-
         // Try to read weight string
         if !sensor.disconnected {
             if let Ok(weight_bytes) = sensor.get_weight_string() {
@@ -91,32 +79,13 @@ fn main() -> ! {
                     .trim_matches('\0')
                     .trim();
 
-                // Concatenate "F: " and weight_str using heapless
-                let mut display_str = String::<32>::new();
-                let _ = display_str.push_str("F: ");
-                let _ = display_str.push_str(weight_str);
-                let _ = display_str.push_str("N");
-
                 // Display the combined weight string
-                Text::new(&display_str, Point::new(10, 35), text_style)
-                    .draw(&mut display)
-                    .unwrap();
-
-                rprintln!("Current Weight: {}", weight_str);
+                ui.display_force(weight_str, 0.0, 0.0);
             }
         } else {
-            Text::new("Sensor Offline", Point::new(10, 30), text_style)
-                .draw(&mut display)
-                .unwrap();
-
-            // Try to re-probe if disconnected
+            ui.display_offline();
             sensor.probe();
         }
-
-        // Send buffer to the physical screen
-        display.flush().unwrap();
-
-        // Slow down the loop a bit
         cortex_m::asm::delay(216_000_000 / 10); // ~100ms
     }
 }
