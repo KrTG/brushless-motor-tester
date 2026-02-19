@@ -3,11 +3,13 @@
 
 mod esc;
 mod m5weight;
+mod ui;
 mod voltage;
 
 use cortex_m_rt::entry;
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
+use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use stm32f7xx_hal::{
     adc::Adc,
     pac::{self, ADC1},
@@ -16,6 +18,7 @@ use stm32f7xx_hal::{
 
 use crate::esc::EscController;
 use crate::m5weight::{DEVICE_DEFAULT_ADDR, M5Weight};
+use crate::ui::Ui;
 use crate::voltage::VoltageSensor;
 
 const DSHOT_HERTZ: u32 = 150_000;
@@ -24,17 +27,27 @@ const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
 const MAX_THROTTLE: f32 = 28.0;
 
-fn arm_esc(esc: &mut EscController) {
+fn arm_esc<DI, SIZE>(esc: &mut EscController, ui: &mut Ui<DI, SIZE>)
+where
+    DI: ssd1306::prelude::WriteOnlyDataCommand,
+    SIZE: ssd1306::prelude::DisplaySize,
+{
     rprintln!("Arming ESC...");
     rprintln!("Sending MotorStop...");
-    for _ in 0..3000 {
+    for i in 0..3000 {
         esc.send_stop();
-        cortex_m::asm::delay(216_000_000 / 1000);
+        if i % 100 == 0 {
+            ui.display_loading();
+        }
+        cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
     rprintln!("Sending Throttle 0...");
-    for _ in 0..3000 {
+    for i in 0..3000 {
         esc.send_throttle(0.0);
-        cortex_m::asm::delay(216_000_000 / 1000);
+        if i % 100 == 0 {
+            ui.display_loading();
+        }
+        cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
 }
 
@@ -71,9 +84,31 @@ fn main() -> ! {
     // Configure PC0 for voltage sensor
     let voltage_pin = gpioc.pc0.into_analog();
 
+    let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
+        dp.I2C2,
+        (scl, sda),
+        stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
+        &clocks,
+        &mut rcc.apb1,
+        1000,
+    );
+
+    let bus = shared_bus::BusManagerSimple::new(i2c);
+
+    let interface = I2CDisplayInterface::new(bus.acquire_i2c());
+    let display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+        .into_buffered_graphics_mode();
+    let mut ui = Ui::new(display);
+    ui.init().unwrap();
+
     rprintln!("Set PE9 LOW, waiting 3 seconds...");
     pe9_gpio.set_low();
-    cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND * 3); // 3 second delay
+    for i in 0..3000 {
+        if i % 100 == 0 {
+            ui.display_loading();
+        }
+        cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
+    }
 
     let pe9 = pe9_gpio
         .into_alternate::<1>()
@@ -84,25 +119,17 @@ fn main() -> ! {
     let mut esc = EscController::new(dp.TIM1, pe9, hertz, &clocks, dp.DMA2);
     rprintln!("Initialized ESC");
 
-    let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
-        dp.I2C2,
-        (scl, sda),
-        stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
-        &clocks,
-        &mut rcc.apb1,
-        1000,
-    );
-    let mut sensor = M5Weight::new(i2c, DEVICE_DEFAULT_ADDR);
+    let mut sensor = M5Weight::new(bus.acquire_i2c(), DEVICE_DEFAULT_ADDR);
     if sensor.probe() {
         rprintln!("M5Weight found at address 0x{:02X}", DEVICE_DEFAULT_ADDR);
     } else {
-        panic!("M5Weight NOT found! Check wiring.");
+        rprintln!("M5Weight NOT found! Check wiring. Proceeding anyway...");
     }
 
     let adc1 = Adc::<ADC1>::adc1(dp.ADC1, &mut rcc.apb2, &clocks, 12, false);
     let mut voltage_sensor = VoltageSensor::<_, 20>::new(adc1, voltage_pin, 11.0, None, 500);
 
-    arm_esc(&mut esc);
+    arm_esc(&mut esc, &mut ui);
 
     sensor.init().unwrap();
     sensor.set_gap_value(GAP_VALUE).unwrap();
@@ -128,6 +155,28 @@ fn main() -> ! {
         } else {
             if throttle < MAX_THROTTLE {
                 throttle += 0.01;
+            }
+        }
+
+        if loops % 100 == 0 {
+            if throttle >= MAX_THROTTLE {
+                if let Ok(weight_str) = sensor.get_weight_string() {
+                    ui.display_force(
+                        weight_str,
+                        voltage_sensor.read(),
+                        voltage_sensor.read_per_cell(),
+                    );
+                }
+            } else {
+                if throttle <= MIN_THROTTLE {
+                    ui.display_thrust(0.0, voltage_sensor.read(), voltage_sensor.read_per_cell());
+                } else {
+                    ui.display_thrust(
+                        throttle,
+                        voltage_sensor.read(),
+                        voltage_sensor.read_per_cell(),
+                    );
+                }
             }
         }
 

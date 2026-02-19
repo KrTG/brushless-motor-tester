@@ -42,6 +42,7 @@ pub struct M5Weight<I2C> {
     pub ema_filter: u8,
     pub gap_value: f32,
     pub firmware_version: u8,
+    weight_buffer: [u8; 16],
 }
 
 impl<I2C, E> M5Weight<I2C>
@@ -58,6 +59,7 @@ where
             ema_filter: 0,
             gap_value: 0.0,
             firmware_version: 0,
+            weight_buffer: [0u8; 16],
         }
     }
 
@@ -174,10 +176,15 @@ where
         Ok(i32::from_le_bytes(data))
     }
 
-    pub fn get_weight_string(&mut self) -> Result<[u8; 16], E> {
+    pub fn get_weight_string(&mut self) -> Result<&str, E> {
         let mut data = [0u8; 16];
         self.read_bytes(WEIGHT_I2C_CAL_DATA_STRING_REG, &mut data)?;
-        Ok(data)
+        self.weight_buffer.copy_from_slice(&data);
+        let s = core::str::from_utf8(&self.weight_buffer)
+            .unwrap_or("Error")
+            .trim_matches('\0')
+            .trim();
+        Ok(s)
     }
 
     pub fn get_gap_value(&mut self) -> Result<f32, E> {
@@ -231,7 +238,10 @@ where
             firmware_version: self.firmware_version,
             force: self.get_weight().unwrap_or(0.0),
             force_int: self.get_weight_int().unwrap_or(0),
-            force_string: self.get_weight_string().unwrap_or([0; 16]),
+            force_string: {
+                self.get_weight_string().ok(); // Updates internal buffer
+                self.weight_buffer
+            },
             raw_adc: self.get_raw_adc().unwrap_or(0),
         }
     }

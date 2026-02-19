@@ -72,11 +72,38 @@ where
             ""
         };
 
-        let mut voltage_str = String::<32>::new();
-        let _ = write!(voltage_str, "V: {:.2}{}", voltage, postfix);
+        let mut subtext_str = String::<32>::new();
+        let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
 
         let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
-        let _ = Text::new(&voltage_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
+        let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
+
+        let _ = self.flush();
+    }
+
+    pub fn display_thrust(&mut self, thrust: f32, voltage: f32, voltage_per_cell: f32) {
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        let mut display_str = String::<32>::new();
+        let _ = write!(display_str, "Thrust: {:.2}%", thrust);
+
+        let postfix = if voltage_per_cell < 3.5 {
+            "!!"
+        } else if voltage_per_cell < 3.7 {
+            "!"
+        } else {
+            ""
+        };
+
+        let mut subtext_str = String::<32>::new();
+        let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
+
+        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
+        let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
 
         let _ = self.flush();
     }

@@ -72,14 +72,7 @@ fn main() -> ! {
     loop {
         // Try to read weight string
         if !sensor.disconnected {
-            if let Ok(weight_bytes) = sensor.get_weight_string() {
-                // Convert bytes to string safely
-                let weight_str = core::str::from_utf8(&weight_bytes)
-                    .unwrap_or("Invalid Text")
-                    .trim_matches('\0')
-                    .trim();
-
-                // Display the combined weight string
+            if let Ok(weight_str) = sensor.get_weight_string() {
                 ui.display_force(weight_str, 0.0, 0.0);
             }
         } else {
