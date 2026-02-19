@@ -5,18 +5,21 @@ mod m5weight;
 
 use cortex_m_rt::{ExceptionFrame, entry, exception};
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
+use heapless::String;
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use stm32f7xx_hal::{pac, prelude::*};
 
 use crate::m5weight::{DEVICE_DEFAULT_ADDR, M5Weight};
+
+const GRAVITY: f32 = 9.80665;
 
 #[entry]
 fn main() -> ! {
@@ -62,12 +65,12 @@ fn main() -> ! {
         rprintln!("M5Weight found at address 0x{:02X}", DEVICE_DEFAULT_ADDR);
         sensor.init().unwrap();
         // Set a default gap value (calibration)
-        sensor.set_gap_value(915.1742).unwrap();
+        sensor.set_gap_value(915174.2 / GRAVITY).unwrap();
     } else {
         rprintln!("M5Weight NOT found!");
     }
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 
     loop {
         // Clear the buffer
@@ -88,12 +91,14 @@ fn main() -> ! {
                     .trim_matches('\0')
                     .trim();
 
-                // Display the weight string
-                Text::new("Weight:", Point::new(10, 25), text_style)
-                    .draw(&mut display)
-                    .unwrap();
+                // Concatenate "F: " and weight_str using heapless
+                let mut display_str = String::<32>::new();
+                let _ = display_str.push_str("F: ");
+                let _ = display_str.push_str(weight_str);
+                let _ = display_str.push_str("N");
 
-                Text::new(weight_str, Point::new(10, 45), text_style)
+                // Display the combined weight string
+                Text::new(&display_str, Point::new(10, 35), text_style)
                     .draw(&mut display)
                     .unwrap();
 
