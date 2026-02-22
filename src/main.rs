@@ -2,9 +2,12 @@
 #![no_main]
 
 mod esc;
+mod input;
 mod m5weight;
 mod ui;
 mod voltage;
+
+use crate::input::Button;
 
 use cortex_m_rt::entry;
 use panic_rtt_target as _;
@@ -25,7 +28,6 @@ const DSHOT_HERTZ: u32 = 150_000;
 const GAP_VALUE: f32 = 915.1742;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
-const MAX_THROTTLE: f32 = 28.0;
 
 fn arm_esc<DI, SIZE>(esc: &mut EscController, ui: &mut Ui<DI, SIZE>)
 where
@@ -77,10 +79,10 @@ fn main() -> ! {
     // Configure PE9 for DShot: Idle LOW
     let mut esc_data_pin = gpioe.pe9.into_push_pull_output();
     // Configure PA3 for bistable button
-    let button_b1 = gpioa.pa3.into_pull_up_input();
-    let button_m2 = gpioc.pc0.into_pull_up_input();
-    let button_m3 = gpioc.pc3.into_pull_up_input();
-    let button_m4 = gpiof.pf3.into_pull_up_input();
+    let mut button_start = Button::new(gpioa.pa3.into_pull_up_input(), 100);
+    let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 20);
+    let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 20);
+    let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 20);
     // I2C setup: PB8 (SCL), PB9 (SDA)
     let sda = gpiof.pf0.into_alternate_open_drain();
     let scl = gpiof.pf1.into_alternate_open_drain();
@@ -137,13 +139,19 @@ fn main() -> ! {
     sensor.init().unwrap();
     sensor.set_gap_value(GAP_VALUE).unwrap();
 
-    let initial_state = button_b1.is_high();
+    button_start.update();
+    let initial_state = button_start.is_pressed();
 
     let mut throttle = MIN_THROTTLE;
     let mut loops = 0;
     let mut time_ms = 0;
+
     loop {
-        let button_state = button_b1.is_high();
+        button_start.update();
+        let button_start_state = button_start.is_pressed();
+        let button_down_pulses = button_down.update();
+        let button_right_pulses = button_right.update();
+        let button_left_pulses = button_left.update();
         voltage_sensor.sample(time_ms);
 
         if throttle <= MIN_THROTTLE {
@@ -151,18 +159,27 @@ fn main() -> ! {
         } else {
             esc.send_throttle(throttle);
         }
-        if voltage_sensor.is_low() || initial_state == button_state {
+
+        if voltage_sensor.is_low() || initial_state == button_start_state {
             if throttle > MIN_THROTTLE {
-                throttle -= 0.01;
+                throttle -= 0.06;
+            } else {
+                if button_down_pulses > 0 {
+                    ui.down();
+                } else if button_right_pulses > 0 {
+                    ui.right();
+                } else if button_left_pulses > 0 {
+                    ui.left();
+                }
             }
         } else {
-            if throttle < MAX_THROTTLE {
-                throttle += 0.01;
+            if throttle < ui.throttle_setpoint {
+                throttle += 0.02;
             }
         }
 
         if loops % 100 == 0 {
-            if throttle >= MAX_THROTTLE {
+            if throttle >= ui.throttle_setpoint {
                 if let Ok(weight_str) = sensor.get_weight_string() {
                     ui.display_force(
                         weight_str,
@@ -172,9 +189,9 @@ fn main() -> ! {
                 }
             } else {
                 if throttle <= MIN_THROTTLE {
-                    ui.display_thrust(0.0, voltage_sensor.read(), voltage_sensor.read_per_cell());
+                    ui.display_options(voltage_sensor.read(), voltage_sensor.read_per_cell());
                 } else {
-                    ui.display_thrust(
+                    ui.display_throttle(
                         throttle,
                         voltage_sensor.read(),
                         voltage_sensor.read_per_cell(),
