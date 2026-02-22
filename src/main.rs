@@ -12,7 +12,7 @@ use rtt_target::{rprintln, rtt_init_print};
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use stm32f7xx_hal::{
     adc::Adc,
-    pac::{self, ADC1},
+    pac::{self, ADC3},
     prelude::*,
 };
 
@@ -75,14 +75,17 @@ fn main() -> ! {
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();
 
     // Configure PE9 for DShot: Idle LOW
-    let mut pe9_gpio = gpioe.pe9.into_push_pull_output();
+    let mut esc_data_pin = gpioe.pe9.into_push_pull_output();
     // Configure PA3 for bistable button
-    let pa3_gpio = gpioa.pa3.into_pull_up_input();
+    let button_b1 = gpioa.pa3.into_pull_up_input();
+    let button_m2 = gpioc.pc0.into_pull_up_input();
+    let button_m3 = gpioc.pc3.into_pull_up_input();
+    let button_m4 = gpiof.pf3.into_pull_up_input();
     // I2C setup: PB8 (SCL), PB9 (SDA)
     let sda = gpiof.pf0.into_alternate_open_drain();
     let scl = gpiof.pf1.into_alternate_open_drain();
     // Configure PC0 for voltage sensor
-    let voltage_pin = gpioc.pc0.into_analog();
+    let voltage_pin = gpiof.pf5.into_analog();
 
     let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
         dp.I2C2,
@@ -102,7 +105,7 @@ fn main() -> ! {
     ui.init().unwrap();
 
     rprintln!("Set PE9 LOW, waiting 3 seconds...");
-    pe9_gpio.set_low();
+    esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
             ui.display_loading();
@@ -110,13 +113,13 @@ fn main() -> ! {
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
 
-    let pe9 = pe9_gpio
+    let esc_data_pin = esc_data_pin
         .into_alternate::<1>()
         .set_speed(stm32f7xx_hal::gpio::Speed::VeryHigh);
 
     // DShot150 as requested
     let hertz = DSHOT_HERTZ.Hz();
-    let mut esc = EscController::new(dp.TIM1, pe9, hertz, &clocks, dp.DMA2);
+    let mut esc = EscController::new(dp.TIM1, esc_data_pin, hertz, &clocks, dp.DMA2);
     rprintln!("Initialized ESC");
 
     let mut sensor = M5Weight::new(bus.acquire_i2c(), DEVICE_DEFAULT_ADDR);
@@ -126,21 +129,21 @@ fn main() -> ! {
         rprintln!("M5Weight NOT found! Check wiring. Proceeding anyway...");
     }
 
-    let adc1 = Adc::<ADC1>::adc1(dp.ADC1, &mut rcc.apb2, &clocks, 12, false);
-    let mut voltage_sensor = VoltageSensor::<_, 20>::new(adc1, voltage_pin, 11.0, None, 500);
+    let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
+    let mut voltage_sensor = VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500);
 
     arm_esc(&mut esc, &mut ui);
 
     sensor.init().unwrap();
     sensor.set_gap_value(GAP_VALUE).unwrap();
 
-    let initial_state = pa3_gpio.is_high();
+    let initial_state = button_b1.is_high();
 
     let mut throttle = MIN_THROTTLE;
     let mut loops = 0;
     let mut time_ms = 0;
     loop {
-        let button_state = pa3_gpio.is_high();
+        let button_state = button_b1.is_high();
         voltage_sensor.sample(time_ms);
 
         if throttle <= MIN_THROTTLE {

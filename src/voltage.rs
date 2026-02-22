@@ -1,13 +1,13 @@
 use embedded_hal::adc::OneShot;
-use stm32f7xx_hal::{adc::Adc, pac::ADC1};
+use stm32f7xx_hal::adc::Adc;
 
 const LIPO_DEAD_VOLTAGE: f32 = 2.5;
 const MIN_VOLTAGE_PER_CELL: f32 = 3.3; // critical level - panic
 const WARNING_VOLTAGE_PER_CELL: f32 = 3.5; // warning level - do not use
 const MAX_VOLTAGE_PER_CELL: f32 = 4.35;
 
-pub struct VoltageSensor<PIN, const N: usize = 30> {
-    adc: Adc<ADC1>,
+pub struct VoltageSensor<ADC, PIN, const N: usize = 30> {
+    adc: Adc<ADC>,
     pin: PIN,
     voltage_divider: f32,
     buffer: [f32; N],
@@ -19,13 +19,13 @@ pub struct VoltageSensor<PIN, const N: usize = 30> {
     battery_s: u8,
 }
 
-impl<PIN, const N: usize> VoltageSensor<PIN, N>
+impl<ADC, PIN, const N: usize> VoltageSensor<ADC, PIN, N>
 where
-    Adc<ADC1>: OneShot<ADC1, u16, PIN>,
-    PIN: embedded_hal::adc::Channel<ADC1>,
+    Adc<ADC>: OneShot<ADC, u16, PIN>,
+    PIN: embedded_hal::adc::Channel<ADC>,
 {
     pub fn new(
-        adc: Adc<ADC1>,
+        adc: Adc<ADC>,
         pin: PIN,
         voltage_divider: f32,
         battery_s: Option<u8>,
