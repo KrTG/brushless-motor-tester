@@ -3,8 +3,8 @@ use embedded_hal::digital::v2::InputPin;
 pub struct Button<P> {
     pin: P,
     is_pressed: bool,
-    press_duration: u32,
-    last_impulse_time: u32,
+    start_time_ms: u32,
+    last_impulse_duration_ms: u32,
     repeat_interval_ms: u32,
 }
 
@@ -13,15 +13,14 @@ impl<P: InputPin> Button<P> {
         Self {
             pin,
             is_pressed: false,
-            press_duration: 0,
-            last_impulse_time: 0,
+            start_time_ms: 0,
+            last_impulse_duration_ms: 0,
             repeat_interval_ms,
         }
     }
 
     /// Update the button state and return 1 if an impulse occurred, 0 otherwise.
-    /// Should be called every 1ms.
-    pub fn update(&mut self) -> u32 {
+    pub fn update(&mut self, now_ms: u32) -> u32 {
         let mut impulse = 0;
         // Pins are usually pulled up, so low means pressed.
         let is_low = self.pin.is_low().ok().unwrap_or(false);
@@ -30,36 +29,34 @@ impl<P: InputPin> Button<P> {
             if !self.is_pressed {
                 // Initial press detect
                 self.is_pressed = true;
-                self.press_duration = 0;
-                self.last_impulse_time = 0;
+                self.start_time_ms = now_ms;
+                self.last_impulse_duration_ms = 0;
             } else {
                 // Button is being held
-                self.press_duration += 1;
+                let duration = now_ms.wrapping_sub(self.start_time_ms);
 
                 // Impulse logic:
-                // 1. Short press
-                if self.press_duration == 40 {
+                // 1. Short press (once at 40ms)
+                if duration >= 20 && self.last_impulse_duration_ms < 20 {
                     impulse = 1;
-                    self.last_impulse_time = 40;
+                    self.last_impulse_duration_ms = 20;
                 }
-                // 2. Long press
-                else if self.press_duration >= 300 {
-                    if self.press_duration == 300 {
+                // 2. Long press (once at 300ms, then every repeat_interval_ms)
+                else if duration >= 1000 {
+                    if self.last_impulse_duration_ms < 1000 {
                         impulse = 1;
-                        self.last_impulse_time = 300;
-                    } else if self.press_duration - self.last_impulse_time
-                        >= self.repeat_interval_ms
-                    {
+                        self.last_impulse_duration_ms = 1000;
+                    } else if duration - self.last_impulse_duration_ms >= self.repeat_interval_ms {
                         impulse = 1;
-                        self.last_impulse_time = self.press_duration;
+                        self.last_impulse_duration_ms += self.repeat_interval_ms;
                     }
                 }
             }
         } else {
             // Button is released
             self.is_pressed = false;
-            self.press_duration = 0;
-            self.last_impulse_time = 0;
+            self.start_time_ms = 0;
+            self.last_impulse_duration_ms = 0;
         }
         impulse
     }
@@ -70,9 +67,9 @@ impl<P: InputPin> Button<P> {
     }
 
     /// Returns the duration the button has been pressed in milliseconds.
-    pub fn press_duration(&self) -> u32 {
+    pub fn press_duration(&self, now_ms: u32) -> u32 {
         if self.is_pressed {
-            self.press_duration
+            now_ms.wrapping_sub(self.start_time_ms)
         } else {
             0
         }

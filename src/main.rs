@@ -67,7 +67,23 @@ fn main() -> ! {
     rtt_init_print!();
     rprintln!("Real DShot Initializing (DMA-driven, Single Direction)...");
 
-    let dp = pac::Peripherals::take().unwrap();
+    let cp = pac::CorePeripherals::take().expect("Failed to take CorePeripherals");
+    let dp = pac::Peripherals::take().expect("Failed to take Peripherals");
+
+    // Initialize Hardware Timer (DWT)
+    let mut dcb = cp.DCB;
+    let mut dwt = cp.DWT;
+
+    // Unlock DWT access (Required on many STM32F7 chips)
+    unsafe {
+        // LAR is at offset 0xFB0 in DWT/ITM
+        let lar_ptr = (0xE0001FB0 as *mut u32);
+        lar_ptr.write_volatile(0xC5ACCE55);
+    }
+
+    dcb.enable_trace();
+    dwt.enable_cycle_counter();
+
     let gpioa = dp.GPIOA.split();
     let gpioc = dp.GPIOC.split();
     let gpioe = dp.GPIOE.split();
@@ -80,19 +96,28 @@ fn main() -> ! {
     let mut esc_data_pin = gpioe.pe9.into_push_pull_output();
     // Configure PA3 for bistable button
     let mut button_start = Button::new(gpioa.pa3.into_pull_up_input(), 100);
-    let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 20);
-    let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 20);
-    let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 20);
-    // I2C setup: PB8 (SCL), PB9 (SDA)
-    let sda = gpiof.pf0.into_alternate_open_drain();
-    let scl = gpiof.pf1.into_alternate_open_drain();
+    let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 100);
+    let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 100);
+    let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 100);
+    // I2C setup: PF0 (SDA), PF1 (SCL) on AF4
+    // High speed ensures sharp signal edges for 400kHz+
+    let sda = gpiof
+        .pf0
+        .into_alternate::<4>()
+        .set_speed(stm32f7xx_hal::gpio::Speed::High)
+        .set_open_drain();
+    let scl = gpiof
+        .pf1
+        .into_alternate::<4>()
+        .set_speed(stm32f7xx_hal::gpio::Speed::High)
+        .set_open_drain();
     // Configure PC0 for voltage sensor
     let voltage_pin = gpiof.pf5.into_analog();
 
     let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
         dp.I2C2,
         (scl, sda),
-        stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
+        stm32f7xx_hal::i2c::Mode::fast(400.kHz()),
         &clocks,
         &mut rcc.apb1,
         1000,
@@ -138,53 +163,104 @@ fn main() -> ! {
 
     sensor.init().unwrap();
     sensor.set_gap_value(GAP_VALUE).unwrap();
+    rprintln!("Gap value set to {}", GAP_VALUE);
 
-    button_start.update();
-    let initial_state = button_start.is_pressed();
+    let sysclk_hz = clocks.sysclk().raw();
+    let ticks_per_ms = sysclk_hz / 1000;
+    rprintln!("Ticks per ms: {}", ticks_per_ms);
+
+    let mut last_ticks = dwt.cyccnt.read();
+    let mut accumulator: u32 = 0;
+    let mut time_ms: u32 = 0;
+
+    button_start.update(0);
+    rprintln!("Button start state: {}", button_start.is_pressed());
+    let mut initial_state = button_start.is_pressed();
+    let mut timer_start_ms: Option<u32> = None;
 
     let mut throttle = MIN_THROTTLE;
-    let mut loops = 0;
-    let mut time_ms = 0;
+    let mut last_ui_ms = 0;
+    let mut last_print_ms = 0;
+    let mut last_esc_ms = 0;
+    let mut ramp_up_ms = 0;
 
     loop {
-        button_start.update();
+        let current_ticks = dwt.cyccnt.read();
+        let delta = current_ticks.wrapping_sub(last_ticks);
+        last_ticks = current_ticks;
+
+        accumulator += delta;
+        while accumulator >= ticks_per_ms {
+            accumulator -= ticks_per_ms;
+            time_ms += 1;
+        }
+
+        button_start.update(time_ms);
         let button_start_state = button_start.is_pressed();
-        let button_down_pulses = button_down.update();
-        let button_right_pulses = button_right.update();
-        let button_left_pulses = button_left.update();
+        let button_down_pulses = button_down.update(time_ms);
+        let button_right_pulses = button_right.update(time_ms);
+        let button_left_pulses = button_left.update(time_ms);
         voltage_sensor.sample(time_ms);
 
-        if throttle <= MIN_THROTTLE {
-            esc.send_throttle(0.0);
-        } else {
-            esc.send_throttle(throttle);
+        if time_ms - last_esc_ms >= 7 {
+            last_esc_ms = time_ms;
+            if throttle <= MIN_THROTTLE {
+                esc.send_throttle(0.0);
+            } else {
+                esc.send_throttle(throttle);
+            }
         }
 
-        if voltage_sensor.is_low() || initial_state == button_start_state {
-            if throttle > MIN_THROTTLE {
-                throttle -= 0.06;
-            } else {
-                if button_down_pulses > 0 {
-                    ui.down();
-                } else if button_right_pulses > 0 {
-                    ui.right();
-                } else if button_left_pulses > 0 {
-                    ui.left();
+        if (voltage_sensor.is_low() || initial_state == button_start_state)
+            && throttle <= MIN_THROTTLE
+        {
+            if button_down_pulses > 0 {
+                ui.down();
+            } else if button_right_pulses > 0 {
+                ui.right();
+            } else if button_left_pulses > 0 {
+                ui.left();
+            }
+        } else if (initial_state != button_start_state && throttle >= ui.throttle_setpoint) {
+            if ui.timer_setpoint > 0.0 {
+                if let Some(start_time) = timer_start_ms {
+                    if time_ms - start_time >= (ui.timer_setpoint * 1000.0) as u32 {
+                        initial_state = button_start_state;
+                        timer_start_ms = None;
+                    }
+                } else {
+                    timer_start_ms = Some(time_ms);
                 }
             }
-        } else {
-            if throttle < ui.throttle_setpoint {
-                throttle += 0.02;
+        }
+
+        if time_ms - ramp_up_ms >= 50 {
+            ramp_up_ms = time_ms;
+            if voltage_sensor.is_low() || initial_state == button_start_state {
+                timer_start_ms = None;
+                if throttle > MIN_THROTTLE {
+                    throttle -= if throttle < 25.0 { 0.6 } else { 3.0 };
+                }
+            } else {
+                if throttle < ui.throttle_setpoint {
+                    throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
+                }
             }
         }
 
-        if loops % 100 == 0 {
+        if time_ms - last_ui_ms >= 211 {
+            last_ui_ms = time_ms;
             if throttle >= ui.throttle_setpoint {
                 if let Ok(weight_str) = sensor.get_weight_string() {
+                    let time_left = timer_start_ms.map(|start_time| {
+                        let elapsed = (time_ms - start_time) as f32 / 1000.0;
+                        (ui.timer_setpoint - elapsed).max(0.0)
+                    });
                     ui.display_force(
                         weight_str,
                         voltage_sensor.read(),
                         voltage_sensor.read_per_cell(),
+                        time_left,
                     );
                 }
             } else {
@@ -200,16 +276,15 @@ fn main() -> ! {
             }
         }
 
-        if loops % 1000 == 0 {
+        if time_ms - last_print_ms >= 1291 {
+            last_print_ms = time_ms;
             print_weight(&mut sensor);
             rprintln!(
                 "Voltage: {:.2} V ({:.2} V per cell)",
                 voltage_sensor.read(),
                 voltage_sensor.read_per_cell()
             );
+            rprintln!("Delta: {}", delta);
         }
-        cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
-        loops += 1;
-        time_ms += 1;
     }
 }

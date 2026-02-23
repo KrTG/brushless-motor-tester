@@ -65,6 +65,7 @@ where
 
     pub fn init(&mut self) -> Result<(), E> {
         // Equivalent to I2C::init() and setOffset()
+        self.query_config();
         self.set_offset()
     }
 
@@ -223,12 +224,10 @@ where
         Ok(data[0])
     }
 
-    /// Represents the Run() logic in the original C++ code
+    /// Represents the Run() logic in the original C++ code (Optimized)
     pub fn run_step(&mut self) -> ForceSensorData {
-        self.query_config();
-
         ForceSensorData {
-            timestamp: 0, // Placeholder for hrt_absolute_time()
+            timestamp: 0,
             device_id: self.address,
             lp_filter: self.lp_filter,
             avg_filter: self.avg_filter,
@@ -239,7 +238,7 @@ where
             force: self.get_weight().unwrap_or(0.0),
             force_int: self.get_weight_int().unwrap_or(0),
             force_string: {
-                self.get_weight_string().ok(); // Updates internal buffer
+                self.get_weight_string().ok();
                 self.weight_buffer
             },
             raw_adc: self.get_raw_adc().unwrap_or(0),

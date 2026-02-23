@@ -73,7 +73,7 @@ fn main() -> ! {
         // Try to read weight string
         if !sensor.disconnected {
             if let Ok(weight_str) = sensor.get_weight_string() {
-                ui.display_force(weight_str, 0.0, 0.0);
+                ui.display_force(weight_str, 0.0, 0.0, None);
             }
         } else {
             ui.display_offline();

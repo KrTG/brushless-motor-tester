@@ -75,11 +75,18 @@ where
         let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
     }
 
-    pub fn display_force(&mut self, weight_str: &str, voltage: f32, voltage_per_cell: f32) {
+    pub fn display_force(
+        &mut self,
+        weight_str: &str,
+        voltage: f32,
+        voltage_per_cell: f32,
+        time_left: Option<f32>,
+    ) {
         self.clear();
         self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
         let mut display_str = String::<32>::new();
         let _ = display_str.push_str("F: ");
@@ -88,6 +95,13 @@ where
 
         let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
         self.draw_voltage(voltage, voltage_per_cell);
+
+        if let Some(time_left) = time_left {
+            let mut display_str = String::<32>::new();
+            let _ = write!(display_str, "Time: {:.0}s", time_left);
+            let _ =
+                Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
+        }
 
         let _ = self.flush();
     }
