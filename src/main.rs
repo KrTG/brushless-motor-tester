@@ -251,9 +251,9 @@ fn main() -> ! {
             && throttle <= MIN_THROTTLE
         {
         } else if initial_state != button_start_state && throttle >= ui.throttle_setpoint {
-            if ui.timer_setpoint > 0.0 {
+            if ui.timer_sec > 0.0 {
                 if let Some(start_time) = timer_start_ms {
-                    if time_ms - start_time >= (ui.timer_setpoint * 1000.0) as u32 {
+                    if time_ms - start_time >= (ui.timer_sec * 1000.0) as u32 {
                         initial_state = button_start_state;
                         timer_start_ms = None;
                     }
@@ -288,7 +288,7 @@ fn main() -> ! {
                 if let Ok(weight_str) = weight_sensor.get_weight_string() {
                     let time_left = timer_start_ms.map(|start_time| {
                         let elapsed = (time_ms - start_time) as f32 / 1000.0;
-                        (ui.timer_setpoint - elapsed).max(0.0)
+                        (ui.timer_sec - elapsed).max(0.0)
                     });
                     ui.display_sensor_readings(
                         weight_str,

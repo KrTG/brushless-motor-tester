@@ -11,14 +11,35 @@ use embedded_graphics::{
 use heapless::String;
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 
-#[derive(PartialEq)]
-enum DisplayedUi {
+#[derive(PartialEq, Clone, Copy)]
+pub enum DisplayedUi {
     None,
     Loading,
     Options,
     SensorReadings,
     Offline,
     Throttle,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum Setpoint {
+    Throttle,
+    Thrust,
+    Current,
+    EngineRPM,
+    NoiseDB,
+}
+
+impl core::fmt::Display for Setpoint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Setpoint::Throttle => write!(f, "Thrtl"),
+            Setpoint::Thrust => write!(f, "Force"),
+            Setpoint::Current => write!(f, "Curnt"),
+            Setpoint::EngineRPM => write!(f, "RPM"),
+            Setpoint::NoiseDB => write!(f, "Noise"),
+        }
+    }
 }
 
 pub struct Ui<DI, SIZE>
@@ -32,7 +53,10 @@ where
     selected_option_menu: u8,
     selected_option_test: u8,
     pub throttle_setpoint: f32,
-    pub timer_setpoint: f32,
+    pub thrust_setpoint: f32,
+    pub current_setpoint: f32,
+    pub timer_sec: f32,
+    pub setpoint: Setpoint,
     displayed_ui: DisplayedUi,
 }
 
@@ -49,7 +73,10 @@ where
             selected_option_menu: 0,
             selected_option_test: 0,
             throttle_setpoint: 10.0,
-            timer_setpoint: 0.0,
+            thrust_setpoint: 5.0,
+            current_setpoint: 0.3,
+            setpoint: Setpoint::Throttle,
+            timer_sec: 0.0,
             displayed_ui: DisplayedUi::None,
         }
     }
@@ -89,6 +116,36 @@ where
         let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
 
         let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
+    }
+
+    fn get_setpoint(&self) -> f32 {
+        match self.setpoint {
+            Setpoint::Throttle => self.throttle_setpoint,
+            Setpoint::Thrust => self.thrust_setpoint,
+            Setpoint::Current => self.current_setpoint,
+            Setpoint::EngineRPM => self.timer_sec,
+            Setpoint::NoiseDB => self.timer_sec,
+        }
+    }
+
+    fn unit(&self) -> &str {
+        match self.setpoint {
+            Setpoint::Throttle => "%",
+            Setpoint::Thrust => "N",
+            Setpoint::Current => "A",
+            Setpoint::EngineRPM => "RPM",
+            Setpoint::NoiseDB => "dB",
+        }
+    }
+
+    fn precision(&self) -> u32 {
+        match self.setpoint {
+            Setpoint::Throttle => 0,
+            Setpoint::Thrust => 0,
+            Setpoint::Current => 1,
+            Setpoint::EngineRPM => 0,
+            Setpoint::NoiseDB => 0,
+        }
     }
 
     pub fn display_sensor_readings(
@@ -145,23 +202,63 @@ where
         self.clear();
         self.draw_border();
 
-        let text_big = MonoTextStyle::new(&FONT_9X18, BinaryColor::On);
+        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
 
         let mut display_str = String::<32>::new();
         if self.selected_option_menu == 0 {
-            let _ = write!(display_str, "< Thr:{:.0}% >", self.throttle_setpoint);
+            let _ = write!(display_str, "< Set:{} >", self.setpoint);
         } else {
-            let _ = write!(display_str, "  Thr:{:.0}%  ", self.throttle_setpoint);
+            let _ = write!(display_str, "  Set:{}  ", self.setpoint);
         }
-        let _ = Text::new(&display_str, Point::new(4, 20), text_big).draw(&mut self.display);
+        let _ = Text::new(&display_str, Point::new(4, 16), text_big).draw(&mut self.display);
 
         let mut display_str = String::<32>::new();
         if self.selected_option_menu == 1 {
-            let _ = write!(display_str, "< Timer:{}s >", self.timer_setpoint);
+            if self.precision() == 0 {
+                let _ = write!(
+                    display_str,
+                    "< {}:{:.0}{} >",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            } else {
+                let _ = write!(
+                    display_str,
+                    "< {}:{:.1}{} >",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            }
         } else {
-            let _ = write!(display_str, "  Timer:{}s  ", self.timer_setpoint);
+            if self.precision() == 0 {
+                let _ = write!(
+                    display_str,
+                    "  {}:{:.0}{}  ",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            } else {
+                let _ = write!(
+                    display_str,
+                    "  {}:{:.1}{}  ",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            }
         }
-        let _ = Text::new(&display_str, Point::new(4, 40), text_big).draw(&mut self.display);
+        let _ = Text::new(&display_str, Point::new(4, 16 + 12), text_big).draw(&mut self.display);
+
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 2 {
+            let _ = write!(display_str, "< Timer:{}s >", self.timer_sec);
+        } else {
+            let _ = write!(display_str, "  Timer:{}s  ", self.timer_sec);
+        }
+        let _ = Text::new(&display_str, Point::new(4, 16 + 24), text_big).draw(&mut self.display);
 
         self.draw_voltage(voltage, voltage_per_cell);
 
@@ -228,7 +325,7 @@ where
 
     pub fn down(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 2,
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 3,
             DisplayedUi::SensorReadings => {
                 self.selected_option_test = (self.selected_option_test + 1) % 2
             }
@@ -238,9 +335,9 @@ where
 
     pub fn up(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu - 1) % 2,
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 2) % 3,
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test - 1) % 2
+                self.selected_option_test = (self.selected_option_test + 1) % 2
             }
             _ => {}
         }
@@ -252,9 +349,22 @@ where
         }
 
         if self.selected_option_menu == 0 {
-            self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
+            self.setpoint = match self.setpoint {
+                Setpoint::Throttle => Setpoint::Current,
+                Setpoint::Thrust => Setpoint::Throttle,
+                Setpoint::Current => Setpoint::Thrust,
+                _ => Setpoint::Throttle,
+            };
+        } else if self.selected_option_menu == 1 {
+            if self.setpoint == Setpoint::Throttle {
+                self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
+            } else if self.setpoint == Setpoint::Thrust {
+                self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(5.0);
+            } else if self.setpoint == Setpoint::Current {
+                self.current_setpoint = (self.current_setpoint - 0.1).max(0.3);
+            }
         } else {
-            self.timer_setpoint = (self.timer_setpoint - 1.0).max(0.0);
+            self.timer_sec = (self.timer_sec - 1.0).max(0.0);
         }
     }
 
@@ -264,9 +374,22 @@ where
         }
 
         if self.selected_option_menu == 0 {
-            self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(100.0);
+            self.setpoint = match self.setpoint {
+                Setpoint::Throttle => Setpoint::Thrust,
+                Setpoint::Thrust => Setpoint::Current,
+                Setpoint::Current => Setpoint::Throttle,
+                _ => Setpoint::Throttle,
+            };
+        } else if self.selected_option_menu == 1 {
+            if self.setpoint == Setpoint::Throttle {
+                self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(100.0);
+            } else if self.setpoint == Setpoint::Thrust {
+                self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(18000.0);
+            } else if self.setpoint == Setpoint::Current {
+                self.current_setpoint = (self.current_setpoint + 0.1).min(20.0);
+            }
         } else {
-            self.timer_setpoint = (self.timer_setpoint + 1.0).min(60.0);
+            self.timer_sec = (self.timer_sec + 1.0).min(60.0);
         }
     }
 }
