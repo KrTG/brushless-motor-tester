@@ -80,7 +80,7 @@ fn main() -> ! {
     // Unlock DWT access (Required on many STM32F7 chips)
     unsafe {
         // LAR is at offset 0xFB0 in DWT/ITM
-        let lar_ptr = (0xE0001FB0 as *mut u32);
+        let lar_ptr = 0xE0001FB0 as *mut u32;
         lar_ptr.write_volatile(0xC5ACCE55);
     }
 
@@ -152,8 +152,8 @@ fn main() -> ! {
     let mut esc = EscController::new(dp.TIM1, esc_data_pin, hertz, &clocks, dp.DMA2);
     rprintln!("Initialized ESC");
 
-    let mut sensor = M5Weight::new(bus.acquire_i2c(), DEVICE_DEFAULT_ADDR);
-    if sensor.probe() {
+    let mut weight_sensor = M5Weight::new(bus.acquire_i2c(), DEVICE_DEFAULT_ADDR);
+    if weight_sensor.probe() {
         rprintln!("M5Weight found at address 0x{:02X}", DEVICE_DEFAULT_ADDR);
     } else {
         rprintln!("M5Weight NOT found! Check wiring. Proceeding anyway...");
@@ -169,8 +169,8 @@ fn main() -> ! {
 
     arm_esc(&mut esc, &mut ui);
 
-    sensor.init().unwrap();
-    sensor.set_gap_value(GAP_VALUE).unwrap();
+    weight_sensor.init().unwrap();
+    weight_sensor.set_gap_value(GAP_VALUE).unwrap();
     rprintln!("Gap value set to {}", GAP_VALUE);
 
     let sysclk_hz = clocks.sysclk().raw();
@@ -191,6 +191,7 @@ fn main() -> ! {
     let mut last_print_ms = 0;
     let mut last_esc_ms = 0;
     let mut ramp_up_ms = 0;
+    let mut offset_done = false;
 
     loop {
         let current_ticks = dwt.cyccnt.read();
@@ -219,17 +220,18 @@ fn main() -> ! {
             }
         }
 
+        if button_down_pulses > 0 {
+            ui.down();
+        } else if button_right_pulses > 0 {
+            ui.right();
+        } else if button_left_pulses > 0 {
+            ui.left();
+        }
+
         if (voltage_sensor.is_low() || initial_state == button_start_state)
             && throttle <= MIN_THROTTLE
         {
-            if button_down_pulses > 0 {
-                ui.down();
-            } else if button_right_pulses > 0 {
-                ui.right();
-            } else if button_left_pulses > 0 {
-                ui.left();
-            }
-        } else if (initial_state != button_start_state && throttle >= ui.throttle_setpoint) {
+        } else if initial_state != button_start_state && throttle >= ui.throttle_setpoint {
             if ui.timer_setpoint > 0.0 {
                 if let Some(start_time) = timer_start_ms {
                     if time_ms - start_time >= (ui.timer_setpoint * 1000.0) as u32 {
@@ -246,10 +248,15 @@ fn main() -> ! {
             ramp_up_ms = time_ms;
             if voltage_sensor.is_low() || initial_state == button_start_state {
                 timer_start_ms = None;
+                offset_done = false;
                 if throttle > MIN_THROTTLE {
                     throttle -= if throttle < 25.0 { 0.6 } else { 3.0 };
                 }
             } else {
+                if !offset_done {
+                    let _ = weight_sensor.set_offset();
+                    offset_done = true;
+                }
                 if throttle < ui.throttle_setpoint {
                     throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
                 }
@@ -259,13 +266,14 @@ fn main() -> ! {
         if time_ms - last_ui_ms >= 211 {
             last_ui_ms = time_ms;
             if throttle >= ui.throttle_setpoint {
-                if let Ok(weight_str) = sensor.get_weight_string() {
+                if let Ok(weight_str) = weight_sensor.get_weight_string() {
                     let time_left = timer_start_ms.map(|start_time| {
                         let elapsed = (time_ms - start_time) as f32 / 1000.0;
                         (ui.timer_setpoint - elapsed).max(0.0)
                     });
-                    ui.display_force(
+                    ui.display_sensor_readings(
                         weight_str,
+                        0.0,
                         voltage_sensor.read(),
                         voltage_sensor.read_per_cell(),
                         time_left,
@@ -286,7 +294,7 @@ fn main() -> ! {
 
         if time_ms - last_print_ms >= 1291 {
             last_print_ms = time_ms;
-            print_weight(&mut sensor);
+            print_weight(&mut weight_sensor);
             rprintln!(
                 "Voltage: {:.2} V ({:.2} V per cell)",
                 voltage_sensor.read(),

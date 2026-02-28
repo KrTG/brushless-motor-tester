@@ -1,6 +1,8 @@
 use core::fmt::Write;
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X10, ascii::FONT_9X18, ascii::FONT_10X20},
+    mono_font::{
+        MonoTextStyle, ascii::FONT_6X10, ascii::FONT_8X13, ascii::FONT_9X18, ascii::FONT_10X20,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -8,6 +10,16 @@ use embedded_graphics::{
 };
 use heapless::String;
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
+
+#[derive(PartialEq)]
+enum DisplayedUi {
+    None,
+    Loading,
+    Options,
+    SensorReadings,
+    Offline,
+    Throttle,
+}
 
 pub struct Ui<DI, SIZE>
 where
@@ -17,9 +29,11 @@ where
     display: Ssd1306<DI, SIZE, BufferedGraphicsMode<SIZE>>,
     box_pos: Point,
     box_vel: Point,
-    selected_position: u8,
+    selected_option_menu: u8,
+    selected_option_test: u8,
     pub throttle_setpoint: f32,
     pub timer_setpoint: f32,
+    displayed_ui: DisplayedUi,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -32,9 +46,11 @@ where
             display,
             box_pos: Point::new(10, 10),
             box_vel: Point::new(8, 4),
-            selected_position: 0,
+            selected_option_menu: 0,
+            selected_option_test: 0,
             throttle_setpoint: 10.0,
             timer_setpoint: 0.0,
+            displayed_ui: DisplayedUi::None,
         }
     }
 
@@ -75,25 +91,43 @@ where
         let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
     }
 
-    pub fn display_force(
+    pub fn display_sensor_readings(
         &mut self,
         weight_str: &str,
+        current: f32,
         voltage: f32,
         voltage_per_cell: f32,
         time_left: Option<f32>,
     ) {
+        self.displayed_ui = DisplayedUi::SensorReadings;
         self.clear();
         self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let text_medium = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
         let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
-        let mut display_str = String::<32>::new();
-        let _ = display_str.push_str("F: ");
-        let _ = display_str.push_str(weight_str);
-        let _ = display_str.push_str("N");
+        let mut display_str_force = String::<32>::new();
+        let _ = display_str_force.push_str("F: ");
+        let _ = display_str_force.push_str(weight_str);
+        let _ = display_str_force.push_str("N");
 
-        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
+        let mut display_str_current = String::<32>::new();
+        let _ = display_str_current.push_str("I: ");
+        let _ = write!(display_str_current, "{:.2}{}", current, "A");
+
+        if self.selected_option_test == 0 {
+            let _ =
+                Text::new(&display_str_force, Point::new(4, 16), text_big).draw(&mut self.display);
+            let _ = Text::new(&display_str_current, Point::new(4, 16 + 12), text_medium)
+                .draw(&mut self.display);
+        } else {
+            let _ = Text::new(&display_str_current, Point::new(4, 16), text_big)
+                .draw(&mut self.display);
+            let _ = Text::new(&display_str_force, Point::new(4, 16 + 12), text_medium)
+                .draw(&mut self.display);
+        }
+
         self.draw_voltage(voltage, voltage_per_cell);
 
         if let Some(time_left) = time_left {
@@ -106,29 +140,15 @@ where
         let _ = self.flush();
     }
 
-    pub fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
-        self.clear();
-        self.draw_border();
-
-        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-
-        let mut display_str = String::<32>::new();
-        let _ = write!(display_str, "Thr:{:.0}%", throttle);
-
-        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
-        self.draw_voltage(voltage, voltage_per_cell);
-
-        let _ = self.flush();
-    }
-
     pub fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
+        self.displayed_ui = DisplayedUi::Options;
         self.clear();
         self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_9X18, BinaryColor::On);
 
         let mut display_str = String::<32>::new();
-        if self.selected_position == 0 {
+        if self.selected_option_menu == 0 {
             let _ = write!(display_str, "< Thr:{:.0}% >", self.throttle_setpoint);
         } else {
             let _ = write!(display_str, "  Thr:{:.0}%  ", self.throttle_setpoint);
@@ -136,7 +156,7 @@ where
         let _ = Text::new(&display_str, Point::new(4, 20), text_big).draw(&mut self.display);
 
         let mut display_str = String::<32>::new();
-        if self.selected_position == 1 {
+        if self.selected_option_menu == 1 {
             let _ = write!(display_str, "< Timer:{}s >", self.timer_setpoint);
         } else {
             let _ = write!(display_str, "  Timer:{}s  ", self.timer_setpoint);
@@ -149,6 +169,7 @@ where
     }
 
     pub fn display_loading(&mut self) {
+        self.displayed_ui = DisplayedUi::Loading;
         self.clear();
         self.draw_border();
 
@@ -179,6 +200,7 @@ where
     }
 
     pub fn display_offline(&mut self) {
+        self.displayed_ui = DisplayedUi::Offline;
         self.clear();
         self.draw_border();
 
@@ -188,22 +210,48 @@ where
         let _ = self.flush();
     }
 
+    pub fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
+        self.displayed_ui = DisplayedUi::Throttle;
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+
+        let mut display_str = String::<32>::new();
+        let _ = write!(display_str, "Thr:{:.0}%", throttle);
+
+        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
+        self.draw_voltage(voltage, voltage_per_cell);
+
+        let _ = self.flush();
+    }
+
     pub fn down(&mut self) {
-        // With rollover
-        self.selected_position = (self.selected_position + 1) % 2;
+        match self.displayed_ui {
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 2,
+            DisplayedUi::SensorReadings => {
+                self.selected_option_test = (self.selected_option_test + 1) % 2
+            }
+            _ => {}
+        }
     }
 
     pub fn up(&mut self) {
-        // With rollover
-        self.selected_position = if self.selected_position == 0 {
-            1
-        } else {
-            self.selected_position - 1
-        };
+        match self.displayed_ui {
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu - 1) % 2,
+            DisplayedUi::SensorReadings => {
+                self.selected_option_test = (self.selected_option_test - 1) % 2
+            }
+            _ => {}
+        }
     }
 
     pub fn left(&mut self) {
-        if self.selected_position == 0 {
+        if self.displayed_ui != DisplayedUi::Options {
+            return;
+        }
+
+        if self.selected_option_menu == 0 {
             self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
         } else {
             self.timer_setpoint = (self.timer_setpoint - 1.0).max(0.0);
@@ -211,7 +259,11 @@ where
     }
 
     pub fn right(&mut self) {
-        if self.selected_position == 0 {
+        if self.displayed_ui != DisplayedUi::Options {
+            return;
+        }
+
+        if self.selected_option_menu == 0 {
             self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(100.0);
         } else {
             self.timer_setpoint = (self.timer_setpoint + 1.0).min(60.0);
