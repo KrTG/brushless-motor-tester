@@ -33,7 +33,7 @@ fn main() -> ! {
     let voltage_pin = gpiof.pf5.into_analog();
 
     // Calibrate ADC to VREFINT
-    let vdda = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
+    let (vdda, _) = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
     rprintln!("Calibrated VDDA: {:.3} V", vdda);
     cortex_m::asm::delay(216_000_000 * 3);
 

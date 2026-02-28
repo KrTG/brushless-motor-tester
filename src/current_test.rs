@@ -9,7 +9,7 @@ use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 use stm32f7xx_hal::{
     adc::Adc,
-    pac::{self, ADC3},
+    pac::{self, ADC1},
     prelude::*,
 };
 
@@ -29,17 +29,14 @@ fn main() -> ! {
     let clocks = rcc.cfgr.sysclk(216.MHz()).freeze();
 
     // Configure GPIO F
-    let gpiof = dp.GPIOF.split();
+    let gpioc = dp.GPIOC.split();
 
     // Configure PF10 as analog input (ADC3 Channel 8)
-    let current_pin = gpiof.pf10.into_analog();
+    let current_pin = gpioc.pc2.into_analog();
 
     // Calibrate ADC to VREFINT
-    let vdda = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
+    let (vdda, adc1) = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
     rprintln!("Calibrated VDDA: {:.3} V", vdda);
-
-    // Initialize ADC3
-    let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
 
     // Sensor characteristics
     let voltage_divider = 2.0;
@@ -47,7 +44,7 @@ fn main() -> ! {
     let sample_interval_ms = 25; // Sample at 40Hz for test
 
     let mut sensor = CurrentSensor::<_, _, 40>::new(
-        adc3,
+        adc1,
         current_pin,
         voltage_divider,
         sensitivity_mv_a,
@@ -78,5 +75,6 @@ fn main() -> ! {
 
         // delay for roughly 200ms
         cortex_m::asm::delay(216_000_000 / 5);
+        now_ms += 200;
     }
 }

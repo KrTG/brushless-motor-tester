@@ -102,6 +102,8 @@ fn main() -> ! {
     let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 100);
     let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 100);
     let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 100);
+    // PC2 for current sensor (ADC1)
+    let current_pin = gpioc.pc2.into_analog();
     // I2C setup: PF0 (SDA), PF1 (SCL) on AF4
     // High speed ensures sharp signal edges for 400kHz+
     let sda = gpiof
@@ -159,13 +161,29 @@ fn main() -> ! {
         rprintln!("M5Weight NOT found! Check wiring. Proceeding anyway...");
     }
 
-    // Calibrate ADC to VREFINT
-    let vdda = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
+    // Calibrate ADC to VREFINT and retrieve ADC1
+    let (vdda, adc1) = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
     rprintln!("Calibrated VDDA: {:.3} V", vdda);
 
     let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
     let mut voltage_sensor =
         VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500, vdda);
+
+    let mut current_sensor = current::CurrentSensor::<_, _, 40>::new(
+        adc1,
+        current_pin,
+        2.0,  // voltage divider
+        66.0, // sensitivity mv/a (ACS712-30A)
+        25,   // sample interval ms
+        vdda,
+    );
+
+    rprintln!("Calibrating Current Sensor...");
+    current_sensor.calibrate();
+    rprintln!(
+        "Current Calibration Done! Zero: {:.3}V",
+        current_sensor.get_voltage()
+    );
 
     arm_esc(&mut esc, &mut ui);
 
@@ -210,6 +228,7 @@ fn main() -> ! {
         let button_right_pulses = button_right.update(time_ms);
         let button_left_pulses = button_left.update(time_ms);
         voltage_sensor.sample(time_ms);
+        current_sensor.sample(time_ms);
 
         if time_ms - last_esc_ms >= 7 {
             last_esc_ms = time_ms;
@@ -273,7 +292,7 @@ fn main() -> ! {
                     });
                     ui.display_sensor_readings(
                         weight_str,
-                        0.0,
+                        current_sensor.get_current_abs(),
                         voltage_sensor.read(),
                         voltage_sensor.read_per_cell(),
                         time_left,
@@ -296,9 +315,10 @@ fn main() -> ! {
             last_print_ms = time_ms;
             print_weight(&mut weight_sensor);
             rprintln!(
-                "Voltage: {:.2} V ({:.2} V per cell)",
+                "Voltage: {:.2} V ({:.2} V per cell) | Current: {:.2} A",
                 voltage_sensor.read(),
-                voltage_sensor.read_per_cell()
+                voltage_sensor.read_per_cell(),
+                current_sensor.get_current_abs()
             );
             rprintln!("Delta: {}", delta);
         }

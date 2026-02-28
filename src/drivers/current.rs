@@ -92,6 +92,12 @@ where
         (v_out - self.zero_offset) / self.sensitivity
     }
 
+    /// Returns the absolute current in Amperes.
+    pub fn get_current_abs(&self) -> f32 {
+        let current = self.get_current();
+        if current < 0.0 { -current } else { current }
+    }
+
     /// Samples for exactly one full buffer cycle (sample_interval_ms * N)
     /// to find the zero-current voltage level.
     pub fn calibrate(&mut self) {
@@ -101,6 +107,8 @@ where
             self.sample(local_now);
             local_now += 1;
         }
+        self.last_update_ms = 0;
         self.zero_offset = self.get_voltage();
+        rtt_target::rprintln!("Current Calibrated. Zero: {:.3}V", self.zero_offset);
     }
 }

@@ -111,8 +111,16 @@ impl EscController {
 
             // MOE (Main Output Enable) + OSSR (Off-State Selection for Run mode)
             tim1.bdtr.modify(|_, w| w.moe().set_bit().ossr().set_bit());
-            tim1.ccer
-                .modify(|_, w| w.cc1e().set_bit().cc1p().clear_bit().cc1np().clear_bit());
+            tim1.ccer.modify(|_, w| {
+                w.cc1e()
+                    .set_bit()
+                    .cc1p()
+                    .clear_bit()
+                    .cc1ne()
+                    .clear_bit()
+                    .cc1np()
+                    .clear_bit()
+            });
 
             // Auto-Reload Preload Enable + Repetition Counter 0
             tim1.cr1.modify(|_, w| w.arpe().set_bit());
