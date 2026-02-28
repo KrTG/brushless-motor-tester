@@ -17,6 +17,7 @@ pub struct VoltageSensor<ADC, PIN, const N: usize = 30> {
     last_update_ms: u32,
     sample_interval_ms: u32,
     battery_s: u8,
+    vdda: f32,
 }
 
 impl<ADC, PIN, const N: usize> VoltageSensor<ADC, PIN, N>
@@ -30,6 +31,7 @@ where
         voltage_divider: f32,
         battery_s: Option<u8>,
         sample_interval_ms: u32,
+        vdda: f32,
     ) -> Self {
         let mut instance = Self {
             adc,
@@ -42,41 +44,19 @@ where
             last_update_ms: 0,
             sample_interval_ms,
             battery_s: battery_s.unwrap_or(0),
+            vdda,
         };
         instance.sample(0);
         instance
     }
 
     pub fn sample(&mut self, now_ms: u32) {
-        let sample = loop {
-            match self.adc.read(&mut self.pin) {
-                Ok(sample) => break sample,
-                Err(_) => continue,
-            }
-        };
-        // STM32 - 3.3 volts, 12 bit ADC
-        let val = (sample as f32) * (3.3 / 4095.0) * self.voltage_divider;
-
-        if !self.initialized {
-            for i in 0..N {
-                self.buffer[i] = val;
-            }
-            self.sum = val * (N as f32);
-            self.initialized = true;
-            self.last_update_ms = now_ms;
+        if self.initialized && now_ms - self.last_update_ms < self.sample_interval_ms {
+            return;
         }
 
-        // Only update the rolling window if the interval has passed
-        if now_ms.wrapping_sub(self.last_update_ms) >= self.sample_interval_ms {
-            // Subtract the old value and add the new one
-            self.sum -= self.buffer[self.index];
-            self.buffer[self.index] = val;
-            self.sum += val;
-
-            // Move the index
-            self.index = (self.index + 1) % N;
-            self.last_update_ms = now_ms;
-        }
+        self.measure();
+        self.last_update_ms = now_ms;
 
         if self.battery_s == 0 {
             self.guess_battery_cells();
@@ -85,6 +65,33 @@ where
             if smoothed_voltage > LIPO_DEAD_VOLTAGE && smoothed_voltage < MIN_VOLTAGE_PER_CELL {
                 panic!("Battery voltage is too low!");
             }
+        }
+    }
+
+    fn measure(&mut self) {
+        let sample = loop {
+            match self.adc.read(&mut self.pin) {
+                Ok(sample) => break sample,
+                Err(_) => continue,
+            }
+        };
+        // STM32 - 12 bit ADC
+        let val = (sample as f32) * (self.vdda / 4095.0) * self.voltage_divider;
+
+        if !self.initialized {
+            for i in 0..N {
+                self.buffer[i] = val;
+            }
+            self.sum = val * (N as f32);
+            self.initialized = true;
+        } else {
+            // Subtract the old value and add the new one
+            self.sum -= self.buffer[self.index];
+            self.buffer[self.index] = val;
+            self.sum += val;
+
+            // Move the index
+            self.index = (self.index + 1) % N;
         }
     }
 

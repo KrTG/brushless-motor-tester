@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 
-mod m5weight;
+mod drivers;
+use drivers::m5weight;
 
 use cortex_m_rt::entry;
 use panic_rtt_target as _;

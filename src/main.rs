@@ -1,11 +1,13 @@
 #![no_std]
 #![no_main]
 
-mod esc;
-mod input;
-mod m5weight;
-mod ui;
-mod voltage;
+mod drivers;
+use drivers::current;
+use drivers::esc;
+use drivers::input;
+use drivers::m5weight;
+use drivers::ui;
+use drivers::voltage;
 
 use crate::input::Button;
 
@@ -19,6 +21,7 @@ use stm32f7xx_hal::{
     prelude::*,
 };
 
+use crate::drivers::calibration;
 use crate::esc::EscController;
 use crate::m5weight::{DEVICE_DEFAULT_ADDR, M5Weight};
 use crate::ui::Ui;
@@ -111,7 +114,7 @@ fn main() -> ! {
         .into_alternate::<4>()
         .set_speed(stm32f7xx_hal::gpio::Speed::High)
         .set_open_drain();
-    // Configure PC0 for voltage sensor
+    // Configure PF5 for voltage sensor
     let voltage_pin = gpiof.pf5.into_analog();
 
     let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
@@ -156,8 +159,13 @@ fn main() -> ! {
         rprintln!("M5Weight NOT found! Check wiring. Proceeding anyway...");
     }
 
+    // Calibrate ADC to VREFINT
+    let vdda = calibration::get_avdd(dp.ADC1, &dp.ADC_COMMON, &mut rcc.apb2, &clocks);
+    rprintln!("Calibrated VDDA: {:.3} V", vdda);
+
     let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
-    let mut voltage_sensor = VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500);
+    let mut voltage_sensor =
+        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500, vdda);
 
     arm_esc(&mut esc, &mut ui);
 

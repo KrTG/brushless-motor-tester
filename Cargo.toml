@@ -34,6 +34,12 @@ test = false
 harness = false
 
 [[bin]]
+name = "current_test"
+path = "src/current_test.rs"
+test = false
+harness = false
+
+[[bin]]
 name = "i2c_test"
 path = "src/i2c_test.rs"
 test = false

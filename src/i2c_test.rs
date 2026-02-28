@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
 
-mod m5weight;
-mod ui;
+mod drivers;
+use drivers::m5weight;
+use drivers::ui;
 
 use cortex_m_rt::{ExceptionFrame, entry, exception};
 use panic_rtt_target as _;
