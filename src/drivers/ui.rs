@@ -57,7 +57,7 @@ where
     pub current_setpoint: f32,
     pub timer_sec: f32,
     pub setpoint: Setpoint,
-    displayed_ui: DisplayedUi,
+    pub displayed_ui: DisplayedUi,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -87,240 +87,29 @@ where
         self.flush()
     }
 
-    fn clear(&mut self) {
-        let _ = self.display.clear(BinaryColor::Off);
-    }
-
-    fn flush(&mut self) -> Result<(), ()> {
-        self.display.flush().map_err(|_| ())
-    }
-
-    fn draw_border(&mut self) {
-        let _ = Rectangle::new(Point::new(0, 0), Size::new(127, 63))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(&mut self.display);
-    }
-
-    fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
-        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-
-        let postfix = if voltage_per_cell < 3.5 {
-            "!!"
-        } else if voltage_per_cell < 3.7 {
-            "!"
-        } else {
-            ""
-        };
-
-        let mut subtext_str = String::<32>::new();
-        let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
-
-        let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
-    }
-
-    fn get_setpoint(&self) -> f32 {
-        match self.setpoint {
-            Setpoint::Throttle => self.throttle_setpoint,
-            Setpoint::Thrust => self.thrust_setpoint,
-            Setpoint::Current => self.current_setpoint,
-            Setpoint::EngineRPM => self.timer_sec,
-            Setpoint::NoiseDB => self.timer_sec,
-        }
-    }
-
-    fn unit(&self) -> &str {
-        match self.setpoint {
-            Setpoint::Throttle => "%",
-            Setpoint::Thrust => "N",
-            Setpoint::Current => "A",
-            Setpoint::EngineRPM => "RPM",
-            Setpoint::NoiseDB => "dB",
-        }
-    }
-
-    fn precision(&self) -> u32 {
-        match self.setpoint {
-            Setpoint::Throttle => 0,
-            Setpoint::Thrust => 0,
-            Setpoint::Current => 1,
-            Setpoint::EngineRPM => 0,
-            Setpoint::NoiseDB => 0,
-        }
-    }
-
-    pub fn display_sensor_readings(
+    pub fn render(
         &mut self,
         weight_str: &str,
         current: f32,
         voltage: f32,
         voltage_per_cell: f32,
         time_left: Option<f32>,
+        throttle: f32,
     ) {
-        self.displayed_ui = DisplayedUi::SensorReadings;
-        self.clear();
-        self.draw_border();
-
-        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let text_medium = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-
-        let mut display_str_force = String::<32>::new();
-        let _ = display_str_force.push_str("F: ");
-        let _ = display_str_force.push_str(weight_str);
-        let _ = display_str_force.push_str("N");
-
-        let mut display_str_current = String::<32>::new();
-        let _ = display_str_current.push_str("I: ");
-        let _ = write!(display_str_current, "{:.2}{}", current, "A");
-
-        if self.selected_option_test == 0 {
-            let _ =
-                Text::new(&display_str_force, Point::new(4, 16), text_big).draw(&mut self.display);
-            let _ = Text::new(&display_str_current, Point::new(4, 16 + 12), text_medium)
-                .draw(&mut self.display);
-        } else {
-            let _ = Text::new(&display_str_current, Point::new(4, 16), text_big)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_force, Point::new(4, 16 + 12), text_medium)
-                .draw(&mut self.display);
+        match self.displayed_ui {
+            DisplayedUi::None => {}
+            DisplayedUi::Loading => self.display_loading(),
+            DisplayedUi::Options => self.display_options(voltage, voltage_per_cell),
+            DisplayedUi::SensorReadings => self.display_sensor_readings(
+                weight_str,
+                current,
+                voltage,
+                voltage_per_cell,
+                time_left,
+            ),
+            DisplayedUi::Offline => self.display_offline(),
+            DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
         }
-
-        self.draw_voltage(voltage, voltage_per_cell);
-
-        if let Some(time_left) = time_left {
-            let mut display_str = String::<32>::new();
-            let _ = write!(display_str, "Time: {:.0}s", time_left);
-            let _ =
-                Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
-        }
-
-        let _ = self.flush();
-    }
-
-    pub fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
-        self.displayed_ui = DisplayedUi::Options;
-        self.clear();
-        self.draw_border();
-
-        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-
-        let mut display_str = String::<32>::new();
-        if self.selected_option_menu == 0 {
-            let _ = write!(display_str, "< Set:{} >", self.setpoint);
-        } else {
-            let _ = write!(display_str, "  Set:{}  ", self.setpoint);
-        }
-        let _ = Text::new(&display_str, Point::new(4, 16), text_big).draw(&mut self.display);
-
-        let mut display_str = String::<32>::new();
-        if self.selected_option_menu == 1 {
-            if self.precision() == 0 {
-                let _ = write!(
-                    display_str,
-                    "< {}:{:.0}{} >",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            } else {
-                let _ = write!(
-                    display_str,
-                    "< {}:{:.1}{} >",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            }
-        } else {
-            if self.precision() == 0 {
-                let _ = write!(
-                    display_str,
-                    "  {}:{:.0}{}  ",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            } else {
-                let _ = write!(
-                    display_str,
-                    "  {}:{:.1}{}  ",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            }
-        }
-        let _ = Text::new(&display_str, Point::new(4, 16 + 12), text_big).draw(&mut self.display);
-
-        let mut display_str = String::<32>::new();
-        if self.selected_option_menu == 2 {
-            let _ = write!(display_str, "< Timer:{}s >", self.timer_sec);
-        } else {
-            let _ = write!(display_str, "  Timer:{}s  ", self.timer_sec);
-        }
-        let _ = Text::new(&display_str, Point::new(4, 16 + 24), text_big).draw(&mut self.display);
-
-        self.draw_voltage(voltage, voltage_per_cell);
-
-        let _ = self.flush();
-    }
-
-    pub fn display_loading(&mut self) {
-        self.displayed_ui = DisplayedUi::Loading;
-        self.clear();
-        self.draw_border();
-
-        let box_size = 10;
-        let bounds = self.display.bounding_box();
-        let width = bounds.size.width as i32;
-        let height = bounds.size.height as i32;
-
-        // Update position
-        self.box_pos += self.box_vel;
-
-        // Bounce logic (keeping space for the border)
-        if self.box_pos.x <= 1 || self.box_pos.x >= width - box_size - 1 {
-            self.box_vel.x = -self.box_vel.x;
-            self.box_pos.x += self.box_vel.x; // Prevent getting stuck
-        }
-        if self.box_pos.y <= 1 || self.box_pos.y >= height - box_size - 1 {
-            self.box_vel.y = -self.box_vel.y;
-            self.box_pos.y += self.box_vel.y;
-        }
-
-        // Draw the bouncing box
-        let _ = Rectangle::new(self.box_pos, Size::new(box_size as u32, box_size as u32))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(&mut self.display);
-
-        let _ = self.flush();
-    }
-
-    pub fn display_offline(&mut self) {
-        self.displayed_ui = DisplayedUi::Offline;
-        self.clear();
-        self.draw_border();
-
-        let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let _ = Text::new("Sensor Offline", Point::new(10, 30), text_style).draw(&mut self.display);
-
-        let _ = self.flush();
-    }
-
-    pub fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
-        self.displayed_ui = DisplayedUi::Throttle;
-        self.clear();
-        self.draw_border();
-
-        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-
-        let mut display_str = String::<32>::new();
-        let _ = write!(display_str, "Thr:{:.0}%", throttle);
-
-        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
-        self.draw_voltage(voltage, voltage_per_cell);
-
-        let _ = self.flush();
     }
 
     pub fn down(&mut self) {
@@ -411,5 +200,267 @@ where
         } else {
             self.timer_sec = (self.timer_sec + 1.0).min(60.0);
         }
+    }
+
+    pub fn set_loading(&mut self) {
+        self.displayed_ui = DisplayedUi::Loading;
+    }
+
+    pub fn set_offline(&mut self) {
+        self.displayed_ui = DisplayedUi::Offline;
+    }
+
+    pub fn engine_off(&mut self) {
+        if self.displayed_ui == DisplayedUi::Throttle
+            || self.displayed_ui == DisplayedUi::SensorReadings
+            || self.displayed_ui == DisplayedUi::Loading
+            || self.displayed_ui == DisplayedUi::None
+        {
+            self.displayed_ui = DisplayedUi::Options;
+        }
+    }
+
+    pub fn engine_transition(&mut self) {
+        self.displayed_ui = DisplayedUi::Throttle;
+    }
+
+    pub fn engine_on(&mut self) {
+        self.displayed_ui = DisplayedUi::SensorReadings;
+    }
+
+    fn clear(&mut self) {
+        let _ = self.display.clear(BinaryColor::Off);
+    }
+
+    fn flush(&mut self) -> Result<(), ()> {
+        self.display.flush().map_err(|_| ())
+    }
+
+    fn draw_border(&mut self) {
+        let _ = Rectangle::new(Point::new(0, 0), Size::new(127, 63))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(&mut self.display);
+    }
+
+    fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
+        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        let postfix = if voltage_per_cell < 3.5 {
+            "!!"
+        } else if voltage_per_cell < 3.7 {
+            "!"
+        } else {
+            ""
+        };
+
+        let mut subtext_str = String::<32>::new();
+        let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
+
+        let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
+    }
+
+    fn get_setpoint(&self) -> f32 {
+        match self.setpoint {
+            Setpoint::Throttle => self.throttle_setpoint,
+            Setpoint::Thrust => self.thrust_setpoint,
+            Setpoint::Current => self.current_setpoint,
+            Setpoint::EngineRPM => self.timer_sec,
+            Setpoint::NoiseDB => self.timer_sec,
+        }
+    }
+
+    fn unit(&self) -> &str {
+        match self.setpoint {
+            Setpoint::Throttle => "%",
+            Setpoint::Thrust => "N",
+            Setpoint::Current => "A",
+            Setpoint::EngineRPM => "RPM",
+            Setpoint::NoiseDB => "dB",
+        }
+    }
+
+    fn precision(&self) -> u32 {
+        match self.setpoint {
+            Setpoint::Throttle => 0,
+            Setpoint::Thrust => 0,
+            Setpoint::Current => 1,
+            Setpoint::EngineRPM => 0,
+            Setpoint::NoiseDB => 0,
+        }
+    }
+
+    fn display_sensor_readings(
+        &mut self,
+        weight_str: &str,
+        current: f32,
+        voltage: f32,
+        voltage_per_cell: f32,
+        time_left: Option<f32>,
+    ) {
+        self.displayed_ui = DisplayedUi::SensorReadings;
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let text_medium = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        let mut display_str_force = String::<32>::new();
+        let _ = display_str_force.push_str("F: ");
+        let _ = display_str_force.push_str(weight_str);
+        let _ = display_str_force.push_str("N");
+
+        let mut display_str_current = String::<32>::new();
+        let _ = display_str_current.push_str("I: ");
+        let _ = write!(display_str_current, "{:.2}{}", current, "A");
+
+        if self.selected_option_test == 0 {
+            let _ =
+                Text::new(&display_str_force, Point::new(4, 16), text_big).draw(&mut self.display);
+            let _ = Text::new(&display_str_current, Point::new(4, 16 + 12), text_medium)
+                .draw(&mut self.display);
+        } else {
+            let _ = Text::new(&display_str_current, Point::new(4, 16), text_big)
+                .draw(&mut self.display);
+            let _ = Text::new(&display_str_force, Point::new(4, 16 + 12), text_medium)
+                .draw(&mut self.display);
+        }
+
+        self.draw_voltage(voltage, voltage_per_cell);
+
+        if let Some(time_left) = time_left {
+            let mut display_str = String::<32>::new();
+            let _ = write!(display_str, "Time: {:.0}s", time_left);
+            let _ =
+                Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
+        }
+
+        let _ = self.flush();
+    }
+
+    fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
+        self.displayed_ui = DisplayedUi::Options;
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 0 {
+            let _ = write!(display_str, "< Set:{} >", self.setpoint);
+        } else {
+            let _ = write!(display_str, "  Set:{}  ", self.setpoint);
+        }
+        let _ = Text::new(&display_str, Point::new(4, 16), text_big).draw(&mut self.display);
+
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 1 {
+            if self.precision() == 0 {
+                let _ = write!(
+                    display_str,
+                    "< {}:{:.0}{} >",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            } else {
+                let _ = write!(
+                    display_str,
+                    "< {}:{:.1}{} >",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            }
+        } else {
+            if self.precision() == 0 {
+                let _ = write!(
+                    display_str,
+                    "  {}:{:.0}{}  ",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            } else {
+                let _ = write!(
+                    display_str,
+                    "  {}:{:.1}{}  ",
+                    self.setpoint,
+                    self.get_setpoint(),
+                    self.unit()
+                );
+            }
+        }
+        let _ = Text::new(&display_str, Point::new(4, 16 + 12), text_big).draw(&mut self.display);
+
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 2 {
+            let _ = write!(display_str, "< Timer:{}s >", self.timer_sec);
+        } else {
+            let _ = write!(display_str, "  Timer:{}s  ", self.timer_sec);
+        }
+        let _ = Text::new(&display_str, Point::new(4, 16 + 24), text_big).draw(&mut self.display);
+
+        self.draw_voltage(voltage, voltage_per_cell);
+
+        let _ = self.flush();
+    }
+
+    fn display_loading(&mut self) {
+        self.displayed_ui = DisplayedUi::Loading;
+        self.clear();
+        self.draw_border();
+
+        let box_size = 10;
+        let bounds = self.display.bounding_box();
+        let width = bounds.size.width as i32;
+        let height = bounds.size.height as i32;
+
+        // Update position
+        self.box_pos += self.box_vel;
+
+        // Bounce logic (keeping space for the border)
+        if self.box_pos.x <= 1 || self.box_pos.x >= width - box_size - 1 {
+            self.box_vel.x = -self.box_vel.x;
+            self.box_pos.x += self.box_vel.x; // Prevent getting stuck
+        }
+        if self.box_pos.y <= 1 || self.box_pos.y >= height - box_size - 1 {
+            self.box_vel.y = -self.box_vel.y;
+            self.box_pos.y += self.box_vel.y;
+        }
+
+        // Draw the bouncing box
+        let _ = Rectangle::new(self.box_pos, Size::new(box_size as u32, box_size as u32))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(&mut self.display);
+
+        let _ = self.flush();
+    }
+
+    fn display_offline(&mut self) {
+        self.displayed_ui = DisplayedUi::Offline;
+        self.clear();
+        self.draw_border();
+
+        let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let _ = Text::new("Sensor Offline", Point::new(10, 30), text_style).draw(&mut self.display);
+
+        let _ = self.flush();
+    }
+
+    fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
+        self.displayed_ui = DisplayedUi::Throttle;
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+
+        let mut display_str = String::<32>::new();
+        let _ = write!(display_str, "Thr:{:.0}%", throttle);
+
+        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
+        self.draw_voltage(voltage, voltage_per_cell);
+
+        let _ = self.flush();
     }
 }

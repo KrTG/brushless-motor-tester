@@ -9,6 +9,7 @@ use drivers::m5weight;
 use drivers::ui;
 use drivers::voltage;
 
+use crate::drivers::ui::DisplayedUi;
 use crate::input::Button;
 
 use cortex_m_rt::entry;
@@ -39,10 +40,11 @@ where
 {
     rprintln!("Arming ESC...");
     rprintln!("Sending MotorStop...");
+    ui.set_loading();
     for i in 0..3000 {
         esc.send_stop();
         if i % 100 == 0 {
-            ui.display_loading();
+            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -50,7 +52,7 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            ui.display_loading();
+            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -137,10 +139,11 @@ fn main() -> ! {
     ui.init().unwrap();
 
     rprintln!("Set PE9 LOW, waiting 3 seconds...");
+    ui.set_loading();
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            ui.display_loading();
+            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -230,15 +233,6 @@ fn main() -> ! {
         voltage_sensor.sample(time_ms);
         current_sensor.sample(time_ms);
 
-        if time_ms - last_esc_ms >= 7 {
-            last_esc_ms = time_ms;
-            if throttle <= MIN_THROTTLE {
-                esc.send_throttle(0.0);
-            } else {
-                esc.send_throttle(throttle);
-            }
-        }
-
         if button_down_pulses > 0 {
             ui.down();
         } else if button_right_pulses > 0 {
@@ -263,6 +257,15 @@ fn main() -> ! {
             }
         }
 
+        if time_ms - last_esc_ms >= 7 {
+            last_esc_ms = time_ms;
+            if throttle <= MIN_THROTTLE {
+                esc.send_throttle(0.0);
+            } else {
+                esc.send_throttle(throttle);
+            }
+        }
+
         if time_ms - ramp_up_ms >= 50 {
             ramp_up_ms = time_ms;
             if voltage_sensor.is_low() || initial_state == button_start_state {
@@ -280,35 +283,39 @@ fn main() -> ! {
                     throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
                 }
             }
+
+            // Update UI state based on current throttle
+            if throttle >= ui.throttle_setpoint {
+                ui.engine_on();
+            } else if throttle <= MIN_THROTTLE {
+                ui.engine_off();
+            } else {
+                ui.engine_transition();
+            }
         }
 
         if time_ms - last_ui_ms >= 211 {
             last_ui_ms = time_ms;
-            if throttle >= ui.throttle_setpoint {
-                if let Ok(weight_str) = weight_sensor.get_weight_string() {
-                    let time_left = timer_start_ms.map(|start_time| {
-                        let elapsed = (time_ms - start_time) as f32 / 1000.0;
-                        (ui.timer_sec - elapsed).max(0.0)
-                    });
-                    ui.display_sensor_readings(
-                        weight_str,
-                        current_sensor.get_current_abs(),
-                        voltage_sensor.read(),
-                        voltage_sensor.read_per_cell(),
-                        time_left,
-                    );
-                }
+
+            let weight_str = if ui.displayed_ui == DisplayedUi::SensorReadings {
+                weight_sensor.get_weight_string().unwrap_or("")
             } else {
-                if throttle <= MIN_THROTTLE {
-                    ui.display_options(voltage_sensor.read(), voltage_sensor.read_per_cell());
-                } else {
-                    ui.display_throttle(
-                        throttle,
-                        voltage_sensor.read(),
-                        voltage_sensor.read_per_cell(),
-                    );
-                }
-            }
+                ""
+            };
+
+            let time_left = timer_start_ms.map(|start_time| {
+                let elapsed = (time_ms - start_time) as f32 / 1000.0;
+                (ui.timer_sec - elapsed).max(0.0)
+            });
+
+            ui.render(
+                weight_str,
+                current_sensor.get_current_abs(),
+                voltage_sensor.read(),
+                voltage_sensor.read_per_cell(),
+                time_left,
+                throttle,
+            );
         }
 
         if time_ms - last_print_ms >= 1291 {
