@@ -42,8 +42,15 @@ fn main() -> ! {
 
     let voltage_divider = 11.0;
 
-    let mut sensor =
-        VoltageSensor::<ADC3, _, 20>::new(adc3, voltage_pin, voltage_divider, None, 500, vdda);
+    let mut sensor = VoltageSensor::<ADC3, _, 20>::new(
+        adc3,
+        voltage_pin,
+        voltage_divider,
+        None,
+        500,
+        vdda,
+        3.5, // Default warning voltage for test
+    );
 
     rprintln!("Starting Voltage Test on PC0 (ADC3/10)...");
 

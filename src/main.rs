@@ -170,7 +170,7 @@ fn main() -> ! {
 
     let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
     let mut voltage_sensor =
-        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500, vdda);
+        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500, vdda, ui.min_voltage);
 
     let mut current_sensor = current::CurrentSensor::<_, _, 40>::new(
         adc1,
@@ -294,7 +294,7 @@ fn main() -> ! {
             }
         }
 
-        if time_ms - last_ui_ms >= 211 {
+        if time_ms - last_ui_ms >= 151 {
             last_ui_ms = time_ms;
 
             let weight_str = if ui.displayed_ui == DisplayedUi::SensorReadings {

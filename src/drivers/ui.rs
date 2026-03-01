@@ -19,6 +19,7 @@ pub enum DisplayedUi {
     SensorReadings,
     Offline,
     Throttle,
+    Settings,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -56,9 +57,12 @@ where
     pub thrust_setpoint: f32,
     pub current_setpoint: f32,
     pub timer_sec: f32,
+    pub throttle_limit: f32,
+    pub min_voltage: f32,
     pub setpoint: Setpoint,
     pub displayed_ui: DisplayedUi,
     last_fingerprint: u64,
+    dirty: bool,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -78,8 +82,11 @@ where
             current_setpoint: 0.3,
             setpoint: Setpoint::Throttle,
             timer_sec: 0.0,
+            throttle_limit: 50.0,
+            min_voltage: 3.6,
             displayed_ui: DisplayedUi::None,
             last_fingerprint: 0,
+            dirty: true,
         }
     }
 
@@ -98,35 +105,22 @@ where
         time_left: Option<f32>,
         throttle: f32,
     ) {
-        // Pack all UI logic and sensor data into a 64-bit fingerprint
-        let v_comp = (voltage * 20.0) as u64; // 0.01v resolution
-        let i_comp = (current * 20.0) as u64; // 0.01a resolution
+        let v_comp = (voltage * 40.0) as u64;
+        let i_comp = (current * 4.0) as u64;
         let thr_comp = throttle as u64;
-        let time_comp = time_left.map(|t| (t + 0.5) as u64).unwrap_or(0);
-        let setval_comp = (self.get_setpoint() * 10.0) as u64;
-
-        // Sum bytes of weight string to catch "0.01" -> "0.02" changes
         let weight_hash = weight_str
             .bytes()
             .fold(0u64, |acc, b| acc.wrapping_add(b as u64));
 
-        let fingerprint = (self.displayed_ui as u64)
-            ^ (self.setpoint as u64).wrapping_shl(4)
-            ^ (self.selected_option_menu as u64).wrapping_shl(8)
-            ^ (self.selected_option_test as u64).wrapping_shl(10)
-            ^ v_comp.wrapping_shl(11)
-            ^ i_comp.wrapping_shl(25)
-            ^ setval_comp.wrapping_shl(39)
-            ^ time_comp.wrapping_shl(50)
-            ^ weight_hash.wrapping_shl(58)
-            ^ thr_comp.wrapping_shl(62);
+        let fingerprint = v_comp
+            ^ i_comp.wrapping_shl(12)
+            ^ thr_comp.wrapping_shl(24)
+            ^ weight_hash.wrapping_shl(36);
 
-        // Redraw only if something actually changed (or if animating Loading)
-        if self.displayed_ui != DisplayedUi::Loading {
-            if fingerprint == self.last_fingerprint {
-                return;
-            }
+        if !self.dirty && fingerprint == self.last_fingerprint {
+            return;
         }
+        self.dirty = false;
         self.last_fingerprint = fingerprint;
 
         match self.displayed_ui {
@@ -142,34 +136,56 @@ where
             ),
             DisplayedUi::Offline => self.display_offline(),
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
+            DisplayedUi::Settings => self.display_settings(),
         }
     }
 
     pub fn down(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 3,
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 4,
             DisplayedUi::SensorReadings => {
                 self.selected_option_test = (self.selected_option_test + 1) % 2
             }
+            DisplayedUi::Settings => {
+                self.selected_option_menu = (self.selected_option_menu + 1) % 3
+            }
             _ => {}
         }
+        self.dirty = true;
     }
 
     pub fn up(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 2) % 3,
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 2) % 4,
             DisplayedUi::SensorReadings => {
                 self.selected_option_test = (self.selected_option_test + 1) % 2;
             }
+            DisplayedUi::Settings => {
+                self.selected_option_menu = (self.selected_option_menu + 2) % 3
+            }
             _ => {}
+        }
+        self.dirty = true;
+    }
+
+    fn handle_settings_left(&mut self) {
+        if self.selected_option_menu == 0 {
+            self.throttle_limit = (self.throttle_limit - 5.0).max(10.0);
+        } else if self.selected_option_menu == 1 {
+            self.min_voltage = (self.min_voltage - 0.1).max(3.3);
         }
     }
 
     pub fn left(&mut self) {
-        if self.displayed_ui != DisplayedUi::Options {
-            return;
+        match self.displayed_ui {
+            DisplayedUi::Options => self.handle_options_left(),
+            DisplayedUi::Settings => self.handle_settings_left(),
+            _ => {}
         }
+        self.dirty = true;
+    }
 
+    fn handle_options_left(&mut self) {
         if self.selected_option_menu == 0 {
             self.setpoint = match self.setpoint {
                 Setpoint::Throttle => Setpoint::Current,
@@ -200,11 +216,28 @@ where
         }
     }
 
-    pub fn right(&mut self) {
-        if self.displayed_ui != DisplayedUi::Options {
-            return;
+    fn handle_settings_right(&mut self) {
+        if self.selected_option_menu == 0 {
+            self.throttle_limit = (self.throttle_limit + 5.0).min(100.0);
+        } else if self.selected_option_menu == 1 {
+            self.min_voltage = (self.min_voltage + 0.1).min(4.2);
+        } else {
+            // Exit back to main options
+            self.displayed_ui = DisplayedUi::Options;
+            self.selected_option_menu = 3; // Highlight Settings entry again
         }
+    }
 
+    pub fn right(&mut self) {
+        match self.displayed_ui {
+            DisplayedUi::Options => self.handle_options_right(),
+            DisplayedUi::Settings => self.handle_settings_right(),
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    fn handle_options_right(&mut self) {
         if self.selected_option_menu == 0 {
             self.setpoint = match self.setpoint {
                 Setpoint::Throttle => Setpoint::Thrust,
@@ -214,7 +247,7 @@ where
             };
         } else if self.selected_option_menu == 1 {
             if self.setpoint == Setpoint::Throttle {
-                self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(100.0);
+                self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(self.throttle_limit);
             } else if self.setpoint == Setpoint::Thrust {
                 if self.thrust_setpoint < 100.0 {
                     self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(100.0);
@@ -230,17 +263,22 @@ where
                     self.current_setpoint = (self.current_setpoint + 1.0).min(20.0);
                 }
             }
-        } else {
+        } else if self.selected_option_menu == 2 {
             self.timer_sec = (self.timer_sec + 1.0).min(60.0);
+        } else {
+            self.displayed_ui = DisplayedUi::Settings;
+            self.selected_option_menu = 0;
         }
     }
 
     pub fn set_loading(&mut self) {
         self.displayed_ui = DisplayedUi::Loading;
+        self.dirty = true;
     }
 
     pub fn set_offline(&mut self) {
         self.displayed_ui = DisplayedUi::Offline;
+        self.dirty = true;
     }
 
     pub fn engine_off(&mut self) {
@@ -250,15 +288,22 @@ where
             || self.displayed_ui == DisplayedUi::None
         {
             self.displayed_ui = DisplayedUi::Options;
+            self.dirty = true;
         }
     }
 
     pub fn engine_transition(&mut self) {
-        self.displayed_ui = DisplayedUi::Throttle;
+        if self.displayed_ui != DisplayedUi::Throttle {
+            self.displayed_ui = DisplayedUi::Throttle;
+            self.dirty = true;
+        }
     }
 
     pub fn engine_on(&mut self) {
-        self.displayed_ui = DisplayedUi::SensorReadings;
+        if self.displayed_ui != DisplayedUi::SensorReadings {
+            self.displayed_ui = DisplayedUi::SensorReadings;
+            self.dirty = true;
+        }
     }
 
     fn clear(&mut self) {
@@ -278,7 +323,7 @@ where
     fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
         let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
-        let postfix = if voltage_per_cell < 3.5 {
+        let postfix = if voltage_per_cell < self.min_voltage {
             "!!"
         } else if voltage_per_cell < 3.7 {
             "!"
@@ -330,7 +375,6 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
     ) {
-        self.displayed_ui = DisplayedUi::SensorReadings;
         self.clear();
         self.draw_border();
 
@@ -349,13 +393,13 @@ where
 
         if self.selected_option_test == 0 {
             let _ =
-                Text::new(&display_str_force, Point::new(4, 16), text_big).draw(&mut self.display);
-            let _ = Text::new(&display_str_current, Point::new(4, 16 + 12), text_medium)
+                Text::new(&display_str_force, Point::new(4, 15), text_big).draw(&mut self.display);
+            let _ = Text::new(&display_str_current, Point::new(4, 15 + 12), text_medium)
                 .draw(&mut self.display);
         } else {
-            let _ = Text::new(&display_str_current, Point::new(4, 16), text_big)
+            let _ = Text::new(&display_str_current, Point::new(4, 15), text_big)
                 .draw(&mut self.display);
-            let _ = Text::new(&display_str_force, Point::new(4, 16 + 12), text_medium)
+            let _ = Text::new(&display_str_force, Point::new(4, 15 + 12), text_medium)
                 .draw(&mut self.display);
         }
 
@@ -372,7 +416,6 @@ where
     }
 
     fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
-        self.displayed_ui = DisplayedUi::Options;
         self.clear();
         self.draw_border();
 
@@ -384,7 +427,7 @@ where
         } else {
             let _ = write!(display_str, "  Set:{}  ", self.setpoint);
         }
-        let _ = Text::new(&display_str, Point::new(4, 16), text_big).draw(&mut self.display);
+        let _ = Text::new(&display_str, Point::new(4, 15), text_big).draw(&mut self.display);
 
         let mut display_str = String::<32>::new();
         if self.selected_option_menu == 1 {
@@ -424,7 +467,7 @@ where
                 );
             }
         }
-        let _ = Text::new(&display_str, Point::new(4, 16 + 12), text_big).draw(&mut self.display);
+        let _ = Text::new(&display_str, Point::new(4, 15 + 12), text_big).draw(&mut self.display);
 
         let mut display_str = String::<32>::new();
         if self.selected_option_menu == 2 {
@@ -432,15 +475,58 @@ where
         } else {
             let _ = write!(display_str, "  Timer:{}s  ", self.timer_sec);
         }
-        let _ = Text::new(&display_str, Point::new(4, 16 + 24), text_big).draw(&mut self.display);
+        let _ = Text::new(&display_str, Point::new(4, 15 + 24), text_big).draw(&mut self.display);
+
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 3 {
+            let _ = write!(display_str, "  Settings >");
+        } else {
+            let _ = write!(display_str, "  Settings  ");
+        }
+        let _ = Text::new(&display_str, Point::new(4, 15 + 36), text_big).draw(&mut self.display);
 
         self.draw_voltage(voltage, voltage_per_cell);
 
         let _ = self.flush();
     }
 
+    fn display_settings(&mut self) {
+        self.clear();
+        self.draw_border();
+
+        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+
+        // 1. Throttle Limit
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 0 {
+            let _ = write!(display_str, "< Thr lim:{}% >", self.throttle_limit);
+        } else {
+            let _ = write!(display_str, "  Thr lim:{}%  ", self.throttle_limit);
+        }
+        let _ = Text::new(&display_str, Point::new(4, 15), text_big).draw(&mut self.display);
+
+        // 2. Minimum Voltage
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 1 {
+            let _ = write!(display_str, "< Min V:{:.1}V >", self.min_voltage);
+        } else {
+            let _ = write!(display_str, "  Min V:{:.1}V  ", self.min_voltage);
+        }
+        let _ = Text::new(&display_str, Point::new(4, 15 + 13), text_big).draw(&mut self.display);
+
+        // 3. Exit
+        let mut display_str = String::<32>::new();
+        if self.selected_option_menu == 2 {
+            let _ = write!(display_str, "  Exit >");
+        } else {
+            let _ = write!(display_str, "  Exit  ");
+        }
+        let _ = Text::new(&display_str, Point::new(4, 15 + 26), text_big).draw(&mut self.display);
+
+        let _ = self.flush();
+    }
+
     fn display_loading(&mut self) {
-        self.displayed_ui = DisplayedUi::Loading;
         self.clear();
         self.draw_border();
 
@@ -468,10 +554,10 @@ where
             .draw(&mut self.display);
 
         let _ = self.flush();
+        self.dirty = true;
     }
 
     fn display_offline(&mut self) {
-        self.displayed_ui = DisplayedUi::Offline;
         self.clear();
         self.draw_border();
 
@@ -482,7 +568,6 @@ where
     }
 
     fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
-        self.displayed_ui = DisplayedUi::Throttle;
         self.clear();
         self.draw_border();
 

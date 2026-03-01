@@ -3,7 +3,6 @@ use stm32f7xx_hal::adc::Adc;
 
 const LIPO_DEAD_VOLTAGE: f32 = 2.5;
 const MIN_VOLTAGE_PER_CELL: f32 = 3.3; // critical level - panic
-const WARNING_VOLTAGE_PER_CELL: f32 = 3.5; // warning level - do not use
 const MAX_VOLTAGE_PER_CELL: f32 = 4.35;
 
 pub struct VoltageSensor<ADC, PIN, const N: usize = 30> {
@@ -18,6 +17,7 @@ pub struct VoltageSensor<ADC, PIN, const N: usize = 30> {
     sample_interval_ms: u32,
     battery_s: u8,
     vdda: f32,
+    warning_voltage: f32,
 }
 
 impl<ADC, PIN, const N: usize> VoltageSensor<ADC, PIN, N>
@@ -32,6 +32,7 @@ where
         battery_s: Option<u8>,
         sample_interval_ms: u32,
         vdda: f32,
+        warning_voltage: f32,
     ) -> Self {
         let mut instance = Self {
             adc,
@@ -45,6 +46,7 @@ where
             sample_interval_ms,
             battery_s: battery_s.unwrap_or(0),
             vdda,
+            warning_voltage,
         };
         instance.sample(0);
         instance
@@ -114,7 +116,7 @@ where
     }
 
     pub fn is_low(&self) -> bool {
-        self.battery_s != 0 && self.read_per_cell() < WARNING_VOLTAGE_PER_CELL
+        self.battery_s != 0 && self.read_per_cell() < self.warning_voltage
     }
 
     pub fn is_unstable(&self) -> bool {
