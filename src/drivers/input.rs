@@ -37,9 +37,9 @@ impl<P: InputPin> Button<P> {
 
                 // Impulse logic:
                 // 1. Short press (once at 40ms)
-                if duration >= 20 && self.last_impulse_duration_ms < 20 {
+                if duration >= 40 && self.last_impulse_duration_ms < 40 {
                     impulse = 1;
-                    self.last_impulse_duration_ms = 20;
+                    self.last_impulse_duration_ms = 40;
                 }
                 // 2. Long press (once at 300ms, then every repeat_interval_ms)
                 else if duration >= 1000 {

@@ -41,7 +41,7 @@ where
     rprintln!("Arming ESC...");
     rprintln!("Sending MotorStop...");
     ui.set_loading();
-    for i in 0..3000 {
+    for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
             ui.render("", 0.0, 0.0, 0.0, None, 0.0);

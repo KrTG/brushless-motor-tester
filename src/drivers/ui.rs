@@ -58,6 +58,7 @@ where
     pub timer_sec: f32,
     pub setpoint: Setpoint,
     pub displayed_ui: DisplayedUi,
+    last_fingerprint: u64,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -78,6 +79,7 @@ where
             setpoint: Setpoint::Throttle,
             timer_sec: 0.0,
             displayed_ui: DisplayedUi::None,
+            last_fingerprint: 0,
         }
     }
 
@@ -96,6 +98,37 @@ where
         time_left: Option<f32>,
         throttle: f32,
     ) {
+        // Pack all UI logic and sensor data into a 64-bit fingerprint
+        let v_comp = (voltage * 20.0) as u64; // 0.01v resolution
+        let i_comp = (current * 20.0) as u64; // 0.01a resolution
+        let thr_comp = throttle as u64;
+        let time_comp = time_left.map(|t| (t + 0.5) as u64).unwrap_or(0);
+        let setval_comp = (self.get_setpoint() * 10.0) as u64;
+
+        // Sum bytes of weight string to catch "0.01" -> "0.02" changes
+        let weight_hash = weight_str
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_add(b as u64));
+
+        let fingerprint = (self.displayed_ui as u64)
+            ^ (self.setpoint as u64).wrapping_shl(4)
+            ^ (self.selected_option_menu as u64).wrapping_shl(8)
+            ^ (self.selected_option_test as u64).wrapping_shl(10)
+            ^ v_comp.wrapping_shl(11)
+            ^ i_comp.wrapping_shl(25)
+            ^ setval_comp.wrapping_shl(39)
+            ^ time_comp.wrapping_shl(50)
+            ^ weight_hash.wrapping_shl(58)
+            ^ thr_comp.wrapping_shl(62);
+
+        // Redraw only if something actually changed (or if animating Loading)
+        if self.displayed_ui != DisplayedUi::Loading {
+            if fingerprint == self.last_fingerprint {
+                return;
+            }
+        }
+        self.last_fingerprint = fingerprint;
+
         match self.displayed_ui {
             DisplayedUi::None => {}
             DisplayedUi::Loading => self.display_loading(),
@@ -126,7 +159,7 @@ where
         match self.displayed_ui {
             DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 2) % 3,
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test + 1) % 2
+                self.selected_option_test = (self.selected_option_test + 1) % 2;
             }
             _ => {}
         }
