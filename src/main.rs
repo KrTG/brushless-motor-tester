@@ -47,7 +47,7 @@ where
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
     rprintln!("Sending Throttle 0...");
-    for i in 0..3000 {
+    for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
             ui.display_loading();
@@ -98,10 +98,10 @@ fn main() -> ! {
     // Configure PE9 for DShot: Idle LOW
     let mut esc_data_pin = gpioe.pe9.into_push_pull_output();
     // Configure PA3 for bistable button
-    let mut button_start = Button::new(gpioa.pa3.into_pull_up_input(), 100);
-    let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 100);
-    let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 100);
-    let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 100);
+    let mut button_start = Button::new(gpioa.pa3.into_pull_up_input(), 25);
+    let mut button_down = Button::new(gpioc.pc0.into_pull_up_input(), 25);
+    let mut button_right = Button::new(gpioc.pc3.into_pull_up_input(), 25);
+    let mut button_left = Button::new(gpiof.pf3.into_pull_up_input(), 25);
     // PC2 for current sensor (ADC1)
     let current_pin = gpioc.pc2.into_analog();
     // I2C setup: PF0 (SDA), PF1 (SCL) on AF4

@@ -95,15 +95,22 @@ where
         }
     }
 
-    pub fn read(&self) -> f32 {
+    fn read_internal(&self) -> f32 {
         self.sum / (N as f32)
+    }
+
+    pub fn read(&self) -> f32 {
+        if self.battery_s == 0 {
+            return 0.0;
+        }
+        self.read_internal()
     }
 
     pub fn read_per_cell(&self) -> f32 {
         if self.battery_s == 0 {
             return 0.0;
         }
-        self.read() / (self.battery_s as f32)
+        self.read_internal() / (self.battery_s as f32)
     }
 
     pub fn is_low(&self) -> bool {
@@ -111,7 +118,7 @@ where
     }
 
     pub fn is_unstable(&self) -> bool {
-        let mean = self.read();
+        let mean = self.read_internal();
         let mut sum_abs_diff = 0.0;
         for &val in &self.buffer {
             sum_abs_diff += (val - mean).abs();
@@ -129,7 +136,7 @@ where
         if self.is_unstable() {
             return;
         }
-        let voltage = self.read();
+        let voltage = self.read_internal();
         if voltage <= LIPO_DEAD_VOLTAGE {
             self.battery_s = 0;
         } else if voltage < MAX_VOLTAGE_PER_CELL {

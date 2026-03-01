@@ -35,7 +35,7 @@ impl core::fmt::Display for Setpoint {
         match self {
             Setpoint::Throttle => write!(f, "Thrtl"),
             Setpoint::Thrust => write!(f, "Force"),
-            Setpoint::Current => write!(f, "Curnt"),
+            Setpoint::Current => write!(f, "Crrnt"),
             Setpoint::EngineRPM => write!(f, "RPM"),
             Setpoint::NoiseDB => write!(f, "Noise"),
         }
@@ -359,9 +359,19 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
             } else if self.setpoint == Setpoint::Thrust {
-                self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(5.0);
+                if self.thrust_setpoint < 100.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(5.0);
+                } else if self.thrust_setpoint < 1000.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint - 10.0).max(99.0);
+                } else {
+                    self.thrust_setpoint = (self.thrust_setpoint - 100.0).max(990.0);
+                }
             } else if self.setpoint == Setpoint::Current {
-                self.current_setpoint = (self.current_setpoint - 0.1).max(0.3);
+                if self.current_setpoint < 5.0 {
+                    self.current_setpoint = (self.current_setpoint - 0.1).max(0.3);
+                } else {
+                    self.current_setpoint = (self.current_setpoint - 1.0).max(4.9);
+                }
             }
         } else {
             self.timer_sec = (self.timer_sec - 1.0).max(0.0);
@@ -384,9 +394,19 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(100.0);
             } else if self.setpoint == Setpoint::Thrust {
-                self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(18000.0);
+                if self.thrust_setpoint < 100.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(100.0);
+                } else if self.thrust_setpoint < 1000.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint + 10.0).min(1000.0);
+                } else {
+                    self.thrust_setpoint = (self.thrust_setpoint + 100.0).min(18000.0);
+                }
             } else if self.setpoint == Setpoint::Current {
-                self.current_setpoint = (self.current_setpoint + 0.1).min(20.0);
+                if self.current_setpoint < 5.0 {
+                    self.current_setpoint = (self.current_setpoint + 0.1).min(5.0);
+                } else {
+                    self.current_setpoint = (self.current_setpoint + 1.0).min(20.0);
+                }
             }
         } else {
             self.timer_sec = (self.timer_sec + 1.0).min(60.0);
