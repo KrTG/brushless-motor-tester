@@ -31,7 +31,6 @@ use crate::voltage::VoltageSensor;
 
 const DSHOT_HERTZ: u32 = 150_000;
 const GAP_VALUE_GRAMS: f32 = 915.1742;
-const GAP_VALUE_NEWTONS: f32 = GAP_VALUE_GRAMS * 1000.0 / GRAVITY;
 const GRAVITY: f32 = 9.80665;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
@@ -47,7 +46,7 @@ where
     for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
-            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
+            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -55,7 +54,7 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
+            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -146,7 +145,7 @@ fn main() -> ! {
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            ui.render("", 0.0, 0.0, 0.0, None, 0.0);
+            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -194,8 +193,8 @@ fn main() -> ! {
     arm_esc(&mut esc, &mut ui);
 
     weight_sensor.init().unwrap();
-    weight_sensor.set_gap_value(GAP_VALUE_NEWTONS).unwrap();
-    rprintln!("Gap value set to {}", GAP_VALUE_NEWTONS);
+    weight_sensor.set_gap_value(GAP_VALUE_GRAMS).unwrap();
+    rprintln!("Gap value set to {}", GAP_VALUE_GRAMS);
 
     let sysclk_hz = clocks.sysclk().raw();
     let ticks_per_ms = sysclk_hz / 1000;
@@ -327,10 +326,10 @@ fn main() -> ! {
         if time_ms - last_ui_ms >= 151 {
             last_ui_ms = time_ms;
 
-            let weight_str = if ui.displayed_ui == DisplayedUi::SensorReadings {
-                weight_sensor.get_weight_string().unwrap_or("")
+            let weight = if ui.displayed_ui == DisplayedUi::SensorReadings {
+                weight_sensor.get_weight().unwrap_or(0.0)
             } else {
-                ""
+                0.0
             };
 
             let time_left = timer_start_ms.map(|start_time| {
@@ -339,7 +338,7 @@ fn main() -> ! {
             });
 
             ui.render(
-                weight_str,
+                weight,
                 current_sensor.get_current_abs(),
                 voltage_sensor.read(),
                 voltage_sensor.read_per_cell(),

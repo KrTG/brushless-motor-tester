@@ -98,7 +98,7 @@ where
 
     pub fn render(
         &mut self,
-        weight_str: &str,
+        weight: f32,
         current: f32,
         voltage: f32,
         voltage_per_cell: f32,
@@ -108,9 +108,7 @@ where
         let v_comp = (voltage * 40.0) as u64;
         let i_comp = (current * 4.0) as u64;
         let thr_comp = throttle as u64;
-        let weight_hash = weight_str
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_add(b as u64));
+        let weight_hash = (weight * 100.0) as u64;
 
         let fingerprint = v_comp
             ^ i_comp.wrapping_shl(12)
@@ -128,7 +126,7 @@ where
             DisplayedUi::Loading => self.display_loading(),
             DisplayedUi::Options => self.display_options(voltage, voltage_per_cell),
             DisplayedUi::SensorReadings => self.display_sensor_readings(
-                weight_str,
+                weight,
                 current,
                 voltage,
                 voltage_per_cell,
@@ -370,7 +368,7 @@ where
 
     fn display_sensor_readings(
         &mut self,
-        weight_str: &str,
+        weight: f32,
         current: f32,
         voltage: f32,
         voltage_per_cell: f32,
@@ -385,9 +383,8 @@ where
         let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
         let mut display_str_force = String::<32>::new();
-        let _ = display_str_force.push_str("F: ");
-        let _ = display_str_force.push_str(weight_str);
-        let _ = display_str_force.push_str("N");
+        let force_newtons = weight * 0.00980665;
+        let _ = write!(display_str_force, "F: {:.2}N", force_newtons);
 
         let mut display_str_current = String::<32>::new();
         let _ = display_str_current.push_str("I: ");
