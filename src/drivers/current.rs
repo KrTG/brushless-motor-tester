@@ -109,6 +109,12 @@ where
         }
         self.last_update_ms = 0;
         self.zero_offset = self.get_voltage();
-        rtt_target::rprintln!("Current Calibrated. Zero: {:.3}V", self.zero_offset);
+        rtt_target::rprintln!("Current Calib - Raw Voltage: {:.3}V", self.zero_offset);
+        if self.zero_offset < 2.25 {
+            panic!(
+                "Current sensor is not connected! (Voltage: {:.3}V)",
+                self.zero_offset
+            );
+        }
     }
 }

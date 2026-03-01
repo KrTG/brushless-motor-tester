@@ -79,7 +79,7 @@ where
             selected_option_test: 0,
             throttle_setpoint: 10.0,
             thrust_setpoint: 5.0,
-            current_setpoint: 0.3,
+            current_setpoint: 0.4,
             setpoint: Setpoint::Throttle,
             timer_sec: 0.0,
             throttle_limit: 50.0,
@@ -133,6 +133,7 @@ where
                 voltage,
                 voltage_per_cell,
                 time_left,
+                throttle,
             ),
             DisplayedUi::Offline => self.display_offline(),
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
@@ -206,9 +207,9 @@ where
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
-                    self.current_setpoint = (self.current_setpoint - 0.1).max(0.3);
+                    self.current_setpoint = (self.current_setpoint - 0.2).max(0.4);
                 } else {
-                    self.current_setpoint = (self.current_setpoint - 1.0).max(4.9);
+                    self.current_setpoint = (self.current_setpoint - 1.0).max(4.8);
                 }
             }
         } else {
@@ -258,7 +259,7 @@ where
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
-                    self.current_setpoint = (self.current_setpoint + 0.1).min(5.0);
+                    self.current_setpoint = (self.current_setpoint + 0.2).min(5.0);
                 } else {
                     self.current_setpoint = (self.current_setpoint + 1.0).min(20.0);
                 }
@@ -374,6 +375,7 @@ where
         voltage: f32,
         voltage_per_cell: f32,
         time_left: Option<f32>,
+        throttle: f32,
     ) {
         self.clear();
         self.draw_border();
@@ -391,15 +393,30 @@ where
         let _ = display_str_current.push_str("I: ");
         let _ = write!(display_str_current, "{:.2}{}", current, "A");
 
+        let mut display_str_throttle = String::<32>::new();
+        let _ = display_str_throttle.push_str("Thr: ");
+        let _ = write!(display_str_throttle, "{:.0}{}", throttle, "%");
+
         if self.selected_option_test == 0 {
             let _ =
                 Text::new(&display_str_force, Point::new(4, 15), text_big).draw(&mut self.display);
             let _ = Text::new(&display_str_current, Point::new(4, 15 + 12), text_medium)
                 .draw(&mut self.display);
-        } else {
+            let _ = Text::new(&display_str_throttle, Point::new(4, 15 + 24), text_medium)
+                .draw(&mut self.display);
+        } else if self.selected_option_test == 1 {
             let _ = Text::new(&display_str_current, Point::new(4, 15), text_big)
                 .draw(&mut self.display);
+            let _ = Text::new(&display_str_throttle, Point::new(4, 15 + 12), text_medium)
+                .draw(&mut self.display);
+            let _ = Text::new(&display_str_force, Point::new(4, 15 + 24), text_medium)
+                .draw(&mut self.display);
+        } else if self.selected_option_test == 2 {
+            let _ = Text::new(&display_str_throttle, Point::new(4, 15), text_big)
+                .draw(&mut self.display);
             let _ = Text::new(&display_str_force, Point::new(4, 15 + 12), text_medium)
+                .draw(&mut self.display);
+            let _ = Text::new(&display_str_current, Point::new(4, 15 + 24), text_medium)
                 .draw(&mut self.display);
         }
 

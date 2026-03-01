@@ -10,6 +10,7 @@ use drivers::ui;
 use drivers::voltage;
 
 use crate::drivers::ui::DisplayedUi;
+use crate::drivers::ui::Setpoint;
 use crate::input::Button;
 
 use cortex_m_rt::entry;
@@ -29,7 +30,9 @@ use crate::ui::Ui;
 use crate::voltage::VoltageSensor;
 
 const DSHOT_HERTZ: u32 = 150_000;
-const GAP_VALUE: f32 = 915.1742;
+const GAP_VALUE_GRAMS: f32 = 915.1742;
+const GAP_VALUE_NEWTONS: f32 = GAP_VALUE_GRAMS * 1000.0 / GRAVITY;
+const GRAVITY: f32 = 9.80665;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
 
@@ -170,14 +173,14 @@ fn main() -> ! {
 
     let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
     let mut voltage_sensor =
-        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 500, vdda, ui.min_voltage);
+        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 100, vdda, ui.min_voltage);
 
-    let mut current_sensor = current::CurrentSensor::<_, _, 40>::new(
+    let mut current_sensor = current::CurrentSensor::<_, _, 150>::new(
         adc1,
         current_pin,
         2.0,  // voltage divider
         66.0, // sensitivity mv/a (ACS712-30A)
-        25,   // sample interval ms
+        10,   // sample interval ms
         vdda,
     );
 
@@ -191,8 +194,8 @@ fn main() -> ! {
     arm_esc(&mut esc, &mut ui);
 
     weight_sensor.init().unwrap();
-    weight_sensor.set_gap_value(GAP_VALUE).unwrap();
-    rprintln!("Gap value set to {}", GAP_VALUE);
+    weight_sensor.set_gap_value(GAP_VALUE_NEWTONS).unwrap();
+    rprintln!("Gap value set to {}", GAP_VALUE_NEWTONS);
 
     let sysclk_hz = clocks.sysclk().raw();
     let ticks_per_ms = sysclk_hz / 1000;
@@ -267,6 +270,7 @@ fn main() -> ! {
         }
 
         if time_ms - ramp_up_ms >= 50 {
+            let mut setpoint_reached = false;
             ramp_up_ms = time_ms;
             if voltage_sensor.is_low() || initial_state == button_start_state {
                 timer_start_ms = None;
@@ -279,18 +283,44 @@ fn main() -> ! {
                     let _ = weight_sensor.set_offset();
                     offset_done = true;
                 }
-                if throttle < ui.throttle_setpoint {
-                    throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
+                if ui.setpoint == Setpoint::Throttle {
+                    if throttle < ui.throttle_setpoint {
+                        throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
+                    } else {
+                        setpoint_reached = true;
+                    }
+                } else if ui.setpoint == Setpoint::Current {
+                    if current_sensor.get_current_abs() < ui.current_setpoint - 0.5 {
+                        throttle += 0.6
+                    } else if current_sensor.get_current_abs() < ui.current_setpoint - 0.2 {
+                        throttle += 0.05
+                    } else if current_sensor.get_current_abs() < ui.current_setpoint - 0.01 {
+                        setpoint_reached = true;
+                        throttle += 0.01
+                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.01 {
+                        setpoint_reached = true;
+                        throttle -= 0.01
+                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.2 {
+                        setpoint_reached = true;
+                        throttle -= 0.05
+                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.5 {
+                        setpoint_reached = true;
+                        throttle -= 0.6
+                    } else {
+                        setpoint_reached = true;
+                    }
                 }
             }
+            if throttle > ui.throttle_limit {
+                throttle = ui.throttle_limit;
+            }
 
-            // Update UI state based on current throttle
-            if throttle >= ui.throttle_setpoint {
+            if setpoint_reached {
                 ui.engine_on();
-            } else if throttle <= MIN_THROTTLE {
-                ui.engine_off();
-            } else {
+            } else if throttle > MIN_THROTTLE {
                 ui.engine_transition();
+            } else {
+                ui.engine_off();
             }
         }
 
