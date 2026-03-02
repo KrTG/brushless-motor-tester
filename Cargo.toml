@@ -3,6 +3,9 @@ name = "motor"
 version = "0.1.0"
 edition = "2024"
 
+[profile.dev]
+opt-level = 2
+
 [[bin]]
 name = "motor"
 path = "src/main.rs"

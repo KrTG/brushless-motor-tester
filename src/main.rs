@@ -46,7 +46,9 @@ where
     for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
-            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+                let _ = ui.flush();
+            }
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -54,7 +56,9 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+                let _ = ui.flush();
+            }
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -63,6 +67,7 @@ where
 fn print_weight<I2C, E>(sensor: &mut M5Weight<I2C>)
 where
     I2C: embedded_hal::blocking::i2c::Write<Error = E>
+        + embedded_hal::blocking::i2c::Read<Error = E>
         + embedded_hal::blocking::i2c::WriteRead<Error = E>,
 {
     let data = sensor.run_step();
@@ -113,23 +118,30 @@ fn main() -> ! {
     let sda = gpiof
         .pf0
         .into_alternate::<4>()
-        .set_speed(stm32f7xx_hal::gpio::Speed::High)
+        .set_speed(stm32f7xx_hal::gpio::Speed::Low)
+        .internal_pull_up(true)
         .set_open_drain();
+
     let scl = gpiof
         .pf1
         .into_alternate::<4>()
-        .set_speed(stm32f7xx_hal::gpio::Speed::High)
+        .set_speed(stm32f7xx_hal::gpio::Speed::Low)
+        .internal_pull_up(true)
         .set_open_drain();
+
     // Configure PF5 for voltage sensor
     let voltage_pin = gpiof.pf5.into_analog();
+
+    // Let I2C bus settle
+    cortex_m::asm::delay(216_000 * 500);
 
     let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
         dp.I2C2,
         (scl, sda),
-        stm32f7xx_hal::i2c::Mode::fast(400.kHz()),
+        stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
         &clocks,
         &mut rcc.apb1,
-        1000,
+        1_000_000,
     );
 
     let bus = shared_bus::BusManagerSimple::new(i2c);
@@ -145,7 +157,9 @@ fn main() -> ! {
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0);
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+                let _ = ui.flush();
+            }
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -192,9 +206,15 @@ fn main() -> ! {
 
     arm_esc(&mut esc, &mut ui);
 
-    weight_sensor.init().unwrap();
-    weight_sensor.set_gap_value(GAP_VALUE_GRAMS).unwrap();
-    rprintln!("Gap value set to {}", GAP_VALUE_GRAMS);
+    match weight_sensor.init() {
+        Ok(_) => rprintln!("Weight sensor initialized"),
+        Err(e) => rprintln!("Failed to initialize weight sensor: {:?}", e),
+    }
+
+    match weight_sensor.set_gap_value(GAP_VALUE_GRAMS) {
+        Ok(_) => rprintln!("Gap value set to {}", GAP_VALUE_GRAMS),
+        Err(e) => rprintln!("Failed to set gap value: {:?}", e),
+    }
 
     let sysclk_hz = clocks.sysclk().raw();
     let ticks_per_ms = sysclk_hz / 1000;
@@ -336,15 +356,32 @@ fn main() -> ! {
                 let elapsed = (time_ms - start_time) as f32 / 1000.0;
                 (ui.timer_sec - elapsed).max(0.0)
             });
+            let weight_val = weight;
+            let current_val = current_sensor.get_current_abs();
+            let voltage_val = voltage_sensor.read();
+            let v_per_cell = voltage_sensor.read_per_cell();
 
-            ui.render(
-                weight,
-                current_sensor.get_current_abs(),
-                voltage_sensor.read(),
-                voltage_sensor.read_per_cell(),
+            let render_start = dwt.cyccnt.read();
+            let redraw = ui.render(
+                weight_val,
+                current_val,
+                voltage_val,
+                v_per_cell,
                 time_left,
                 throttle,
             );
+            let time_render = dwt.cyccnt.read() - render_start;
+
+            if redraw {
+                let flush_start = dwt.cyccnt.read();
+                let _ = ui.flush();
+                let time_flush = dwt.cyccnt.read() - flush_start;
+                rprintln!(
+                    "Render time: {} cycles | Flush time: {} cycles",
+                    time_render,
+                    time_flush
+                );
+            }
         }
 
         if time_ms - last_print_ms >= 1291 {

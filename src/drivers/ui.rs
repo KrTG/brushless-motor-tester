@@ -104,7 +104,7 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
         throttle: f32,
-    ) {
+    ) -> bool {
         let v_comp = (voltage * 40.0) as u64;
         let i_comp = (current * 4.0) as u64;
         let thr_comp = throttle as u64;
@@ -116,7 +116,7 @@ where
             ^ weight_hash.wrapping_shl(36);
 
         if !self.dirty && fingerprint == self.last_fingerprint {
-            return;
+            return false;
         }
         self.dirty = false;
         self.last_fingerprint = fingerprint;
@@ -137,6 +137,7 @@ where
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
             DisplayedUi::Settings => self.display_settings(),
         }
+        true
     }
 
     pub fn down(&mut self) {
@@ -309,7 +310,7 @@ where
         let _ = self.display.clear(BinaryColor::Off);
     }
 
-    fn flush(&mut self) -> Result<(), ()> {
+    pub fn flush(&mut self) -> Result<(), ()> {
         self.display.flush().map_err(|_| ())
     }
 
@@ -425,8 +426,6 @@ where
             let _ =
                 Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
         }
-
-        let _ = self.flush();
     }
 
     fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
@@ -500,8 +499,6 @@ where
         let _ = Text::new(&display_str, Point::new(4, 15 + 36), text_big).draw(&mut self.display);
 
         self.draw_voltage(voltage, voltage_per_cell);
-
-        let _ = self.flush();
     }
 
     fn display_settings(&mut self) {
@@ -536,8 +533,6 @@ where
             let _ = write!(display_str, "  Exit  ");
         }
         let _ = Text::new(&display_str, Point::new(4, 15 + 26), text_big).draw(&mut self.display);
-
-        let _ = self.flush();
     }
 
     fn display_loading(&mut self) {
@@ -567,7 +562,6 @@ where
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(&mut self.display);
 
-        let _ = self.flush();
         self.dirty = true;
     }
 
@@ -577,8 +571,6 @@ where
 
         let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let _ = Text::new("Sensor Offline", Point::new(10, 30), text_style).draw(&mut self.display);
-
-        let _ = self.flush();
     }
 
     fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
@@ -592,7 +584,5 @@ where
 
         let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
         self.draw_voltage(voltage, voltage_per_cell);
-
-        let _ = self.flush();
     }
 }

@@ -1,7 +1,7 @@
 // M5Weight I2C Driver adapted from m5weight.cpp
 // Focuses on direct translation of logic with simplified structure.
 
-use embedded_hal::blocking::i2c::{Write, WriteRead};
+use embedded_hal::blocking::i2c::{Read, Write, WriteRead};
 
 pub const DEVICE_DEFAULT_ADDR: u8 = 0x26;
 
@@ -47,7 +47,7 @@ pub struct M5Weight<I2C> {
 
 impl<I2C, E> M5Weight<I2C>
 where
-    I2C: Write<Error = E> + WriteRead<Error = E>,
+    I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
 {
     pub fn new(i2c: I2C, address: u8) -> Self {
         Self {
@@ -81,10 +81,22 @@ where
     }
 
     fn read_bytes(&mut self, reg: u8, buffer: &mut [u8]) -> Result<(), E> {
-        match self.i2c.write_read(self.address, &[reg], buffer) {
+        // Some MCUs on I2C devices need a moment to process the register address
+        // before they can start sending data back.
+        match self.i2c.write(self.address, &[reg]) {
             Ok(_) => {
-                self.disconnected = false;
-                Ok(())
+                // Micro-delay to let the slave MCU prepare its internal buffer
+                cortex_m::asm::delay(216_000 / 10); // ~100us at 216MHz
+                match self.i2c.read(self.address, buffer) {
+                    Ok(_) => {
+                        self.disconnected = false;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        self.disconnected = true;
+                        Err(e)
+                    }
+                }
             }
             Err(e) => {
                 self.disconnected = true;
