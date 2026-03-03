@@ -235,6 +235,8 @@ fn main() -> ! {
     let mut last_esc_ms = 0;
     let mut ramp_up_ms = 0;
     let mut offset_done = false;
+    let mut weight = 0.0;
+    let mut last_weight_ms = 0;
 
     loop {
         let current_ticks = dwt.cyccnt.read();
@@ -313,20 +315,42 @@ fn main() -> ! {
                         setpoint_reached = true;
                     }
                 } else if ui.setpoint == Setpoint::Current {
-                    if current_sensor.get_current_abs() < ui.current_setpoint - 0.5 {
+                    let current = current_sensor.get_current_abs();
+                    if current < ui.current_setpoint - 0.5 {
                         throttle += 0.6
-                    } else if current_sensor.get_current_abs() < ui.current_setpoint - 0.2 {
-                        throttle += 0.05
-                    } else if current_sensor.get_current_abs() < ui.current_setpoint - 0.01 {
+                    } else if current < ui.current_setpoint - 0.2 {
+                        throttle += 0.1
+                    } else if current < ui.current_setpoint - 0.01 {
                         setpoint_reached = true;
                         throttle += 0.03
-                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.01 {
+                    } else if current > ui.current_setpoint + 0.01 {
                         setpoint_reached = true;
                         throttle -= 0.01
-                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.2 {
+                    } else if current > ui.current_setpoint + 0.2 {
                         setpoint_reached = true;
-                        throttle -= 0.05
-                    } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.5 {
+                        throttle -= 0.1
+                    } else if current > ui.current_setpoint + 0.5 {
+                        setpoint_reached = true;
+                        throttle -= 0.6
+                    } else {
+                        setpoint_reached = true;
+                    }
+                } else if ui.setpoint == Setpoint::Thrust {
+                    let force = weight * ui.force_unit_factor();
+                    if force < ui.thrust_setpoint - 0.2 {
+                        throttle += 0.6
+                    } else if force < ui.thrust_setpoint - 0.05 {
+                        throttle += 0.1
+                    } else if force < ui.thrust_setpoint - 0.003 {
+                        setpoint_reached = true;
+                        throttle += 0.03
+                    } else if force > ui.thrust_setpoint + 0.003 {
+                        setpoint_reached = true;
+                        throttle -= 0.01
+                    } else if force > ui.thrust_setpoint + 0.05 {
+                        setpoint_reached = true;
+                        throttle -= 0.1
+                    } else if force > ui.thrust_setpoint + 0.2 {
                         setpoint_reached = true;
                         throttle -= 0.6
                     } else {
@@ -347,14 +371,19 @@ fn main() -> ! {
             }
         }
 
-        if time_ms - last_ui_ms >= 151 {
-            last_ui_ms = time_ms;
+        if time_ms - last_weight_ms >= 200 && initial_state != button_start_state {
+            last_weight_ms = time_ms;
+            weight = weight_sensor.get_weight().unwrap_or(0.0);
+        }
 
-            let weight = if ui.displayed_ui == DisplayedUi::SensorReadings {
-                weight_sensor.get_weight().unwrap_or(0.0)
+        if time_ms - last_ui_ms
+            >= if initial_state == button_start_state {
+                151
             } else {
-                0.0
-            };
+                1000
+            }
+        {
+            last_ui_ms = time_ms;
 
             let time_left = timer_start_ms.map(|start_time| {
                 let elapsed = (time_ms - start_time) as f32 / 1000.0;
@@ -365,6 +394,9 @@ fn main() -> ! {
             let voltage_val = voltage_sensor.read();
             let v_per_cell = voltage_sensor.read_per_cell();
 
+            if initial_state != button_start_state {
+                esc.send_throttle(throttle);
+            }
             //let render_start = dwt.cyccnt.read();
             let redraw = ui.render(
                 weight_val,
@@ -374,6 +406,9 @@ fn main() -> ! {
                 time_left,
                 throttle,
             );
+            if initial_state != button_start_state {
+                esc.send_throttle(throttle);
+            }
             //let time_render = dwt.cyccnt.read() - render_start;
 
             if redraw {
@@ -385,6 +420,9 @@ fn main() -> ! {
                 //    time_render,
                 //    time_flush
                 //);
+                if initial_state != button_start_state {
+                    esc.send_throttle(throttle);
+                }
             }
         }
 

@@ -31,6 +31,12 @@ pub enum Setpoint {
     NoiseDB,
 }
 
+#[derive(PartialEq, Clone, Copy)]
+pub enum ForceUnit {
+    Gram,
+    Newton,
+}
+
 impl core::fmt::Display for Setpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -53,13 +59,14 @@ where
     box_vel: Point,
     selected_option_menu: u8,
     selected_option_test: u8,
+    pub setpoint: Setpoint,
     pub throttle_setpoint: f32,
     pub thrust_setpoint: f32,
     pub current_setpoint: f32,
     pub timer_sec: f32,
     pub throttle_limit: f32,
     pub min_voltage: f32,
-    pub setpoint: Setpoint,
+    pub force_unit: ForceUnit,
     pub displayed_ui: DisplayedUi,
     last_fingerprint: u64,
     dirty: bool,
@@ -77,16 +84,24 @@ where
             box_vel: Point::new(8, 4),
             selected_option_menu: 0,
             selected_option_test: 0,
-            throttle_setpoint: 10.0,
-            thrust_setpoint: 5.0,
-            current_setpoint: 0.4,
             setpoint: Setpoint::Throttle,
+            throttle_setpoint: 10.0,
+            thrust_setpoint: 0.1,
+            current_setpoint: 0.4,
             timer_sec: 0.0,
             throttle_limit: 50.0,
             min_voltage: 3.6,
+            force_unit: ForceUnit::Newton,
             displayed_ui: DisplayedUi::None,
             last_fingerprint: 0,
             dirty: true,
+        }
+    }
+
+    pub fn force_unit_factor(&self) -> f32 {
+        match self.force_unit {
+            ForceUnit::Gram => 1.0,
+            ForceUnit::Newton => 0.00980665,
         }
     }
 
@@ -197,12 +212,10 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 100.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(5.0);
-                } else if self.thrust_setpoint < 1000.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint - 10.0).max(99.0);
+                if self.thrust_setpoint < 10.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint - 0.1).max(0.1);
                 } else {
-                    self.thrust_setpoint = (self.thrust_setpoint - 100.0).max(990.0);
+                    self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(9.9);
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -249,12 +262,10 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(self.throttle_limit);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 100.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(100.0);
-                } else if self.thrust_setpoint < 1000.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint + 10.0).min(1000.0);
+                if self.thrust_setpoint < 10.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint + 0.1).min(10.0);
                 } else {
-                    self.thrust_setpoint = (self.thrust_setpoint + 100.0).min(18000.0);
+                    self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(180.0);
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -360,7 +371,7 @@ where
     fn precision(&self) -> u32 {
         match self.setpoint {
             Setpoint::Throttle => 0,
-            Setpoint::Thrust => 0,
+            Setpoint::Thrust => 1,
             Setpoint::Current => 1,
             Setpoint::EngineRPM => 0,
             Setpoint::NoiseDB => 0,
@@ -384,7 +395,7 @@ where
         let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
         let mut display_str_force = String::<32>::new();
-        let force_newtons = weight * 0.00980665;
+        let force_newtons = weight * self.force_unit_factor();
         let _ = write!(display_str_force, "F: {:.2}N", force_newtons);
 
         let mut display_str_current = String::<32>::new();
