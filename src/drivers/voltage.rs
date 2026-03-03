@@ -57,20 +57,22 @@ where
             return;
         }
 
-        self.measure();
+        let unstable_voltage = self.measure();
         self.last_update_ms = now_ms;
 
         if self.battery_s == 0 {
             self.guess_battery_cells();
         } else {
             let smoothed_voltage = self.read_per_cell();
-            if smoothed_voltage > LIPO_DEAD_VOLTAGE && smoothed_voltage < MIN_VOLTAGE_PER_CELL {
+            if unstable_voltage > LIPO_DEAD_VOLTAGE && smoothed_voltage < MIN_VOLTAGE_PER_CELL {
                 panic!("Battery voltage is too low!");
+            } else if smoothed_voltage < LIPO_DEAD_VOLTAGE {
+                self.battery_s = 0;
             }
         }
     }
 
-    fn measure(&mut self) {
+    fn measure(&mut self) -> f32 {
         let sample = loop {
             match self.adc.read(&mut self.pin) {
                 Ok(sample) => break sample,
@@ -95,6 +97,7 @@ where
             // Move the index
             self.index = (self.index + 1) % N;
         }
+        return val;
     }
 
     fn read_internal(&self) -> f32 {
@@ -117,6 +120,10 @@ where
 
     pub fn is_low(&self) -> bool {
         self.battery_s != 0 && self.read_per_cell() < self.warning_voltage
+    }
+
+    pub fn is_unplugged(&self) -> bool {
+        self.battery_s == 0
     }
 
     pub fn is_unstable(&self) -> bool {

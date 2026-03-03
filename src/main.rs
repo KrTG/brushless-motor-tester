@@ -291,7 +291,11 @@ fn main() -> ! {
         if time_ms - ramp_up_ms >= 50 {
             let mut setpoint_reached = false;
             ramp_up_ms = time_ms;
-            if voltage_sensor.is_low() || initial_state == button_start_state {
+            if voltage_sensor.is_low() || voltage_sensor.is_unplugged() {
+                initial_state = button_start_state;
+            }
+
+            if initial_state == button_start_state {
                 timer_start_ms = None;
                 offset_done = false;
                 if throttle > MIN_THROTTLE {
@@ -315,7 +319,7 @@ fn main() -> ! {
                         throttle += 0.05
                     } else if current_sensor.get_current_abs() < ui.current_setpoint - 0.01 {
                         setpoint_reached = true;
-                        throttle += 0.01
+                        throttle += 0.03
                     } else if current_sensor.get_current_abs() > ui.current_setpoint + 0.01 {
                         setpoint_reached = true;
                         throttle -= 0.01
@@ -361,7 +365,7 @@ fn main() -> ! {
             let voltage_val = voltage_sensor.read();
             let v_per_cell = voltage_sensor.read_per_cell();
 
-            let render_start = dwt.cyccnt.read();
+            //let render_start = dwt.cyccnt.read();
             let redraw = ui.render(
                 weight_val,
                 current_val,
@@ -370,17 +374,17 @@ fn main() -> ! {
                 time_left,
                 throttle,
             );
-            let time_render = dwt.cyccnt.read() - render_start;
+            //let time_render = dwt.cyccnt.read() - render_start;
 
             if redraw {
-                let flush_start = dwt.cyccnt.read();
+                //let flush_start = dwt.cyccnt.read();
                 let _ = ui.flush();
-                let time_flush = dwt.cyccnt.read() - flush_start;
-                rprintln!(
-                    "Render time: {} cycles | Flush time: {} cycles",
-                    time_render,
-                    time_flush
-                );
+                //let time_flush = dwt.cyccnt.read() - flush_start;
+                //rprintln!(
+                //    "Render time: {} cycles | Flush time: {} cycles",
+                //    time_render,
+                //    time_flush
+                //);
             }
         }
 
