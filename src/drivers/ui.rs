@@ -3,11 +3,10 @@ use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_6X10, ascii::FONT_8X13, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle, Styled},
+    primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
-use heapless::String;
-use rtt_target::rprintln;
+use heapless::{Deque, String};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use stm32f7xx_hal::pac::DWT;
 
@@ -43,12 +42,17 @@ struct OpDrawText {
     position: Point,
 }
 
-enum Op {
-    DrawText(OpDrawText),
-    Flush,
-    None,
+struct OpDrawRect {
+    position: Point,
+    size: Size,
+    style: PrimitiveStyle<BinaryColor>,
 }
-const EMPTY_OP: Op = Op::None;
+enum Op {
+    Clear,
+    DrawText(OpDrawText),
+    DrawRect(OpDrawRect),
+    Flush,
+}
 
 impl core::fmt::Display for Setpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -83,7 +87,7 @@ where
     pub displayed_ui: DisplayedUi,
     last_fingerprint: u64,
     dirty: bool,
-    buffer: [Op; 16],
+    buffer: Deque<Op, 64>,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -109,7 +113,7 @@ where
             displayed_ui: DisplayedUi::None,
             last_fingerprint: 0,
             dirty: true,
-            buffer: [EMPTY_OP; 16],
+            buffer: Deque::new(),
         }
     }
 
@@ -126,7 +130,19 @@ where
         self.flush()
     }
 
-    pub fn render(
+    pub fn render_partial(&mut self) -> bool {
+        if self.buffer.is_empty() {
+            return false;
+        }
+        self.draw_call();
+        true
+    }
+
+    pub fn render_full(&mut self) {
+        while self.render_partial() {}
+    }
+
+    pub fn update(
         &mut self,
         weight: f32,
         current: f32,
@@ -141,15 +157,10 @@ where
         let thr_comp = throttle as u64;
         let weight_hash = (weight * 100.0) as u64;
 
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
         let fingerprint = v_comp
             ^ i_comp.wrapping_shl(12)
             ^ thr_comp.wrapping_shl(24)
             ^ weight_hash.wrapping_shl(36);
-        rprintln!(
-            "Fingerprint time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
 
         if !self.dirty && fingerprint == self.last_fingerprint {
             return false;
@@ -157,11 +168,11 @@ where
         self.dirty = false;
         self.last_fingerprint = fingerprint;
 
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
+        let _ = self.buffer.push_back(Op::Clear);
         match self.displayed_ui {
             DisplayedUi::None => {}
             DisplayedUi::Loading => self.display_loading(),
-            DisplayedUi::Options => self.display_options(voltage, voltage_per_cell),
+            DisplayedUi::Options => self.display_test_configuration(voltage, voltage_per_cell),
             DisplayedUi::SensorReadings => self.display_sensor_readings(
                 weight,
                 current,
@@ -175,10 +186,7 @@ where
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
             DisplayedUi::Settings => self.display_settings(),
         }
-        rprintln!(
-            "Time 3: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
+        let _ = self.buffer.push_back(Op::Flush);
 
         true
     }
@@ -226,6 +234,30 @@ where
             _ => {}
         }
         self.dirty = true;
+    }
+
+    fn draw_call(&mut self) {
+        if let Some(op) = self.buffer.pop_front() {
+            match op {
+                Op::DrawText(op) => {
+                    let style = match op.fontsize {
+                        6 => MonoTextStyle::new(&FONT_6X10, BinaryColor::On),
+                        8 => MonoTextStyle::new(&FONT_8X13, BinaryColor::On),
+                        _ => MonoTextStyle::new(&FONT_10X20, BinaryColor::On),
+                    };
+                    let _ = Text::new(&op.text, op.position, style).draw(&mut self.display);
+                }
+                Op::DrawRect(op) => {
+                    let _ = Rectangle::new(op.position, op.size)
+                        .into_styled(op.style)
+                        .draw(&mut self.display);
+                }
+                Op::Clear => self.clear(),
+                Op::Flush => {
+                    let _ = self.flush();
+                }
+            }
+        }
     }
 
     fn handle_options_left(&mut self) {
@@ -360,8 +392,6 @@ where
     }
 
     fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
-        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-
         let postfix = if voltage_per_cell < self.min_voltage {
             "!!"
         } else if voltage_per_cell < 3.7 {
@@ -373,7 +403,11 @@ where
         let mut subtext_str = String::<32>::new();
         let _ = write!(subtext_str, "V: {:.2}{}", voltage, postfix);
 
-        let _ = Text::new(&subtext_str, Point::new(4, 63 - 4), text_small).draw(&mut self.display);
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: subtext_str,
+            fontsize: 6,
+            position: Point::new(4, 63 - 4),
+        }));
     }
 
     fn get_setpoint(&self) -> f32 {
@@ -414,26 +448,8 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
         throttle: f32,
-        dwt: Option<&DWT>,
+        _dwt: Option<&DWT>,
     ) {
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
-        self.clear();
-        rprintln!(
-            "Clear time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
-        rprintln!(
-            "Border time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
-
-        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let text_medium = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-        let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
-
         let mut display_str_force = String::<32>::new();
         let force_newtons = weight * self.force_unit_factor();
         let _ = write!(display_str_force, "F: {:.2}N", force_newtons);
@@ -446,80 +462,82 @@ where
         let _ = display_str_throttle.push_str("Thr: ");
         let _ = write!(display_str_throttle, "{:.0}{}", throttle, "%");
 
-        rprintln!(
-            "String time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
-
         if self.selected_option_test == 0 {
-            let _ =
-                Text::new(&display_str_force, Point::new(4, 15), text_big).draw(&mut self.display);
-            let _ = Text::new(&display_str_current, Point::new(4, 15 + 12), text_medium)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_throttle, Point::new(4, 15 + 24), text_medium)
-                .draw(&mut self.display);
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_force,
+                fontsize: 10,
+                position: Point::new(4, 15),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_current,
+                fontsize: 8,
+                position: Point::new(4, 15 + 12),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_throttle,
+                fontsize: 8,
+                position: Point::new(4, 15 + 24),
+            }));
         } else if self.selected_option_test == 1 {
-            let _ = Text::new(&display_str_current, Point::new(4, 15), text_big)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_throttle, Point::new(4, 15 + 12), text_medium)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_force, Point::new(4, 15 + 24), text_medium)
-                .draw(&mut self.display);
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_current,
+                fontsize: 10,
+                position: Point::new(4, 15),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_throttle,
+                fontsize: 8,
+                position: Point::new(4, 15 + 12),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_force,
+                fontsize: 8,
+                position: Point::new(4, 15 + 24),
+            }));
         } else if self.selected_option_test == 2 {
-            let _ = Text::new(&display_str_throttle, Point::new(4, 15), text_big)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_force, Point::new(4, 15 + 12), text_medium)
-                .draw(&mut self.display);
-            let _ = Text::new(&display_str_current, Point::new(4, 15 + 24), text_medium)
-                .draw(&mut self.display);
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_throttle,
+                fontsize: 10,
+                position: Point::new(4, 15),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_force,
+                fontsize: 8,
+                position: Point::new(4, 15 + 12),
+            }));
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str_current,
+                fontsize: 8,
+                position: Point::new(4, 15 + 24),
+            }));
         }
-
-        rprintln!(
-            "Text time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
-
-        self.draw_voltage(voltage, voltage_per_cell);
-
-        rprintln!(
-            "Voltage time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
-        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
 
         if let Some(time_left) = time_left {
             let mut display_str = String::<32>::new();
             let _ = write!(display_str, "Time: {:.0}s", time_left);
-            let _ =
-                Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
+            let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+                text: display_str,
+                fontsize: 8,
+                position: Point::new(65, 63 - 4),
+            }));
         }
 
-        rprintln!(
-            "Time time: {}",
-            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
-        );
+        self.draw_voltage(voltage, voltage_per_cell);
     }
 
-    fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
-        self.clear();
-
-        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-
-        let mut display_str = String::<32>::new();
+    fn display_test_configuration(&mut self, voltage: f32, voltage_per_cell: f32) {
+        let mut display_str_menu = String::<32>::new();
         if self.selected_option_menu == 0 {
-            let _ = write!(display_str, "< Set:{} >", self.setpoint);
+            let _ = write!(display_str_menu, "< Set:{} >", self.setpoint);
         } else {
-            let _ = write!(display_str, "  Set:{}  ", self.setpoint);
+            let _ = write!(display_str_menu, "  Set:{}  ", self.setpoint);
         }
-        let _ = Text::new(&display_str, Point::new(4, 15), text_big).draw(&mut self.display);
 
-        let mut display_str = String::<32>::new();
+        let mut display_str_setpoint = String::<32>::new();
         if self.selected_option_menu == 1 {
             if self.precision() == 0 {
                 let _ = write!(
-                    display_str,
+                    display_str_setpoint,
                     "< {}:{:.0}{} >",
                     self.setpoint,
                     self.get_setpoint(),
@@ -527,7 +545,7 @@ where
                 );
             } else {
                 let _ = write!(
-                    display_str,
+                    display_str_setpoint,
                     "< {}:{:.1}{} >",
                     self.setpoint,
                     self.get_setpoint(),
@@ -537,7 +555,7 @@ where
         } else {
             if self.precision() == 0 {
                 let _ = write!(
-                    display_str,
+                    display_str_setpoint,
                     "  {}:{:.0}{}  ",
                     self.setpoint,
                     self.get_setpoint(),
@@ -545,7 +563,7 @@ where
                 );
             } else {
                 let _ = write!(
-                    display_str,
+                    display_str_setpoint,
                     "  {}:{:.1}{}  ",
                     self.setpoint,
                     self.get_setpoint(),
@@ -553,63 +571,105 @@ where
                 );
             }
         }
-        let _ = Text::new(&display_str, Point::new(4, 15 + 12), text_big).draw(&mut self.display);
 
-        let mut display_str = String::<32>::new();
+        let mut display_str_timer = String::<32>::new();
         if self.selected_option_menu == 2 {
-            let _ = write!(display_str, "< Timer:{}s >", self.timer_sec);
+            let _ = write!(display_str_timer, "< Timer:{}s >", self.timer_sec);
         } else {
-            let _ = write!(display_str, "  Timer:{}s  ", self.timer_sec);
+            let _ = write!(display_str_timer, "  Timer:{}s  ", self.timer_sec);
         }
-        let _ = Text::new(&display_str, Point::new(4, 15 + 24), text_big).draw(&mut self.display);
 
-        let mut display_str = String::<32>::new();
+        let mut display_str_settings = String::<32>::new();
         if self.selected_option_menu == 3 {
-            let _ = write!(display_str, "  Settings >");
+            let _ = write!(display_str_settings, "  Settings >");
         } else {
-            let _ = write!(display_str, "  Settings  ");
+            let _ = write!(display_str_settings, "  Settings  ");
         }
-        let _ = Text::new(&display_str, Point::new(4, 15 + 36), text_big).draw(&mut self.display);
+
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_menu,
+            fontsize: 8,
+            position: Point::new(4, 15),
+        }));
+
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_setpoint,
+            fontsize: 8,
+            position: Point::new(4, 15 + 12),
+        }));
+
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_timer,
+            fontsize: 8,
+            position: Point::new(4, 15 + 24),
+        }));
+
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_settings,
+            fontsize: 8,
+            position: Point::new(4, 15 + 36),
+        }));
 
         self.draw_voltage(voltage, voltage_per_cell);
     }
 
     fn display_settings(&mut self) {
-        self.clear();
-
-        let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-
-        // 1. Throttle Limit
-        let mut display_str = String::<32>::new();
+        let mut display_str_throttle_limit = String::<32>::new();
         if self.selected_option_menu == 0 {
-            let _ = write!(display_str, "< Thr lim:{}% >", self.throttle_limit);
+            let _ = write!(
+                display_str_throttle_limit,
+                "< Thr lim:{}% >",
+                self.throttle_limit
+            );
         } else {
-            let _ = write!(display_str, "  Thr lim:{}%  ", self.throttle_limit);
+            let _ = write!(
+                display_str_throttle_limit,
+                "  Thr lim:{}%  ",
+                self.throttle_limit
+            );
         }
-        let _ = Text::new(&display_str, Point::new(4, 15), text_big).draw(&mut self.display);
 
         // 2. Minimum Voltage
-        let mut display_str = String::<32>::new();
+        let mut display_str_min_voltage = String::<32>::new();
         if self.selected_option_menu == 1 {
-            let _ = write!(display_str, "< Min V:{:.1}V >", self.min_voltage);
+            let _ = write!(
+                display_str_min_voltage,
+                "< Min V:{:.1}V >",
+                self.min_voltage
+            );
         } else {
-            let _ = write!(display_str, "  Min V:{:.1}V  ", self.min_voltage);
+            let _ = write!(
+                display_str_min_voltage,
+                "  Min V:{:.1}V  ",
+                self.min_voltage
+            );
         }
-        let _ = Text::new(&display_str, Point::new(4, 15 + 13), text_big).draw(&mut self.display);
 
         // 3. Exit
-        let mut display_str = String::<32>::new();
+        let mut display_str_exit = String::<32>::new();
         if self.selected_option_menu == 2 {
-            let _ = write!(display_str, "  Exit >");
+            let _ = write!(display_str_exit, "  Exit >");
         } else {
-            let _ = write!(display_str, "  Exit  ");
+            let _ = write!(display_str_exit, "  Exit  ");
         }
-        let _ = Text::new(&display_str, Point::new(4, 15 + 26), text_big).draw(&mut self.display);
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_throttle_limit,
+            fontsize: 8,
+            position: Point::new(4, 15),
+        }));
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_min_voltage,
+            fontsize: 8,
+            position: Point::new(4, 15 + 12),
+        }));
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_exit,
+            fontsize: 8,
+            position: Point::new(4, 15 + 24),
+        }));
     }
 
     fn display_loading(&mut self) {
-        self.clear();
-
         let box_size = 10;
         let bounds = self.display.bounding_box();
         let width = bounds.size.width as i32;
@@ -629,29 +689,35 @@ where
         }
 
         // Draw the bouncing box
-        let _ = Rectangle::new(self.box_pos, Size::new(box_size as u32, box_size as u32))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(&mut self.display);
+        let _ = self.buffer.push_back(Op::DrawRect(OpDrawRect {
+            position: self.box_pos,
+            size: Size::new(box_size as u32, box_size as u32),
+            style: PrimitiveStyle::with_stroke(BinaryColor::On, 1),
+        }));
 
         self.dirty = true;
     }
 
     fn display_offline(&mut self) {
-        self.clear();
+        let mut display_str = String::<32>::new();
+        let _ = write!(display_str, "Sensor Offline");
 
-        let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let _ = Text::new("Sensor Offline", Point::new(10, 30), text_style).draw(&mut self.display);
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str,
+            fontsize: 10,
+            position: Point::new(4, 32),
+        }));
     }
 
     fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
-        self.clear();
-
-        let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-
         let mut display_str = String::<32>::new();
         let _ = write!(display_str, "Thr:{:.0}%", throttle);
 
-        let _ = Text::new(&display_str, Point::new(4, 32), text_big).draw(&mut self.display);
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str,
+            fontsize: 10,
+            position: Point::new(4, 32),
+        }));
         self.draw_voltage(voltage, voltage_per_cell);
     }
 }

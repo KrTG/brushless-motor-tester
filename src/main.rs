@@ -9,7 +9,6 @@ use drivers::m5weight;
 use drivers::ui;
 use drivers::voltage;
 
-use crate::drivers::ui::DisplayedUi;
 use crate::drivers::ui::Setpoint;
 use crate::input::Button;
 
@@ -31,7 +30,6 @@ use crate::voltage::VoltageSensor;
 
 const DSHOT_HERTZ: u32 = 150_000;
 const GAP_VALUE_GRAMS: f32 = 915.1742;
-const GRAVITY: f32 = 9.80665;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
 
@@ -46,9 +44,8 @@ where
     for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
-                let _ = ui.flush();
-            }
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -56,9 +53,8 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
-                let _ = ui.flush();
-            }
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -118,14 +114,14 @@ fn main() -> ! {
     let sda = gpiof
         .pf0
         .into_alternate::<4>()
-        .set_speed(stm32f7xx_hal::gpio::Speed::Low)
+        .set_speed(stm32f7xx_hal::gpio::Speed::High)
         .internal_pull_up(true)
         .set_open_drain();
 
     let scl = gpiof
         .pf1
         .into_alternate::<4>()
-        .set_speed(stm32f7xx_hal::gpio::Speed::Low)
+        .set_speed(stm32f7xx_hal::gpio::Speed::High)
         .internal_pull_up(true)
         .set_open_drain();
 
@@ -138,7 +134,7 @@ fn main() -> ! {
     let i2c = stm32f7xx_hal::i2c::BlockingI2c::i2c2(
         dp.I2C2,
         (scl, sda),
-        stm32f7xx_hal::i2c::Mode::standard(100.kHz()),
+        stm32f7xx_hal::i2c::Mode::fast(400.kHz()),
         &clocks,
         &mut rcc.apb1,
         1_000_000,
@@ -157,9 +153,8 @@ fn main() -> ! {
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
-                let _ = ui.flush();
-            }
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
@@ -230,7 +225,8 @@ fn main() -> ! {
     let mut timer_start_ms: Option<u32> = None;
 
     let mut throttle = MIN_THROTTLE;
-    let mut last_ui_ms = 0;
+    let mut last_ui_update_ms = 0;
+    let mut last_ui_render_ms = 0;
     let mut last_print_ms = 0;
     let mut last_esc_ms = 0;
     let mut ramp_up_ms = 0;
@@ -287,6 +283,16 @@ fn main() -> ! {
                 esc.send_throttle(0.0);
             } else {
                 esc.send_throttle(throttle);
+            }
+        }
+
+        if time_ms - last_ui_render_ms >= 15 {
+            last_ui_render_ms = time_ms;
+            let starttime = dwt.cyccnt.read();
+            ui.render_partial();
+            let render_delta = dwt.cyccnt.read().wrapping_sub(starttime);
+            if render_delta > 5000 {
+                rprintln!("UI render time: {}", render_delta);
             }
         }
 
@@ -376,14 +382,14 @@ fn main() -> ! {
             weight = weight_sensor.get_weight().unwrap_or(0.0);
         }
 
-        if time_ms - last_ui_ms
+        if time_ms - last_ui_update_ms
             >= if initial_state == button_start_state {
                 151
             } else {
                 1000
             }
         {
-            last_ui_ms = time_ms;
+            last_ui_update_ms = time_ms;
 
             let time_left = timer_start_ms.map(|start_time| {
                 let elapsed = (time_ms - start_time) as f32 / 1000.0;
@@ -394,10 +400,7 @@ fn main() -> ! {
             let voltage_val = voltage_sensor.read();
             let v_per_cell = voltage_sensor.read_per_cell();
 
-            if initial_state != button_start_state {
-                esc.send_throttle(throttle);
-            }
-            let redraw = ui.render(
+            ui.update(
                 weight_val,
                 current_val,
                 voltage_val,
@@ -406,16 +409,6 @@ fn main() -> ! {
                 throttle,
                 Some(&dwt),
             );
-            if initial_state != button_start_state {
-                esc.send_throttle(throttle);
-            }
-
-            if redraw {
-                let _ = ui.flush();
-                if initial_state != button_start_state {
-                    esc.send_throttle(throttle);
-                }
-            }
         }
 
         if time_ms - last_print_ms >= 1291 {
