@@ -1,15 +1,15 @@
 use core::fmt::Write;
 use embedded_graphics::{
-    mono_font::{
-        MonoTextStyle, ascii::FONT_6X10, ascii::FONT_8X13, ascii::FONT_9X18, ascii::FONT_10X20,
-    },
+    mono_font::{MonoTextStyle, ascii::FONT_6X10, ascii::FONT_8X13, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{PrimitiveStyle, Rectangle, Styled},
     text::Text,
 };
 use heapless::String;
+use rtt_target::rprintln;
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
+use stm32f7xx_hal::pac::DWT;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum DisplayedUi {
@@ -36,6 +36,19 @@ pub enum ForceUnit {
     Gram,
     Newton,
 }
+
+struct OpDrawText {
+    text: String<32>,
+    fontsize: u8,
+    position: Point,
+}
+
+enum Op {
+    DrawText(OpDrawText),
+    Flush,
+    None,
+}
+const EMPTY_OP: Op = Op::None;
 
 impl core::fmt::Display for Setpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -70,6 +83,7 @@ where
     pub displayed_ui: DisplayedUi,
     last_fingerprint: u64,
     dirty: bool,
+    buffer: [Op; 16],
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -85,7 +99,7 @@ where
             selected_option_menu: 0,
             selected_option_test: 0,
             setpoint: Setpoint::Throttle,
-            throttle_setpoint: 10.0,
+            throttle_setpoint: 5.0,
             thrust_setpoint: 0.1,
             current_setpoint: 0.4,
             timer_sec: 0.0,
@@ -95,6 +109,7 @@ where
             displayed_ui: DisplayedUi::None,
             last_fingerprint: 0,
             dirty: true,
+            buffer: [EMPTY_OP; 16],
         }
     }
 
@@ -119,16 +134,22 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
         throttle: f32,
+        dwt: Option<&DWT>,
     ) -> bool {
         let v_comp = (voltage * 40.0) as u64;
         let i_comp = (current * 4.0) as u64;
         let thr_comp = throttle as u64;
         let weight_hash = (weight * 100.0) as u64;
 
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
         let fingerprint = v_comp
             ^ i_comp.wrapping_shl(12)
             ^ thr_comp.wrapping_shl(24)
             ^ weight_hash.wrapping_shl(36);
+        rprintln!(
+            "Fingerprint time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
 
         if !self.dirty && fingerprint == self.last_fingerprint {
             return false;
@@ -136,6 +157,7 @@ where
         self.dirty = false;
         self.last_fingerprint = fingerprint;
 
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
         match self.displayed_ui {
             DisplayedUi::None => {}
             DisplayedUi::Loading => self.display_loading(),
@@ -147,11 +169,17 @@ where
                 voltage_per_cell,
                 time_left,
                 throttle,
+                dwt,
             ),
             DisplayedUi::Offline => self.display_offline(),
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
             DisplayedUi::Settings => self.display_settings(),
         }
+        rprintln!(
+            "Time 3: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
+
         true
     }
 
@@ -159,7 +187,7 @@ where
         match self.displayed_ui {
             DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 4,
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test + 1) % 2
+                self.selected_option_test = (self.selected_option_test + 1) % 3
             }
             DisplayedUi::Settings => {
                 self.selected_option_menu = (self.selected_option_menu + 1) % 3
@@ -171,12 +199,12 @@ where
 
     pub fn up(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 2) % 4,
+            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 4,
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test + 1) % 2;
+                self.selected_option_test = (self.selected_option_test + 1) % 3;
             }
             DisplayedUi::Settings => {
-                self.selected_option_menu = (self.selected_option_menu + 2) % 3
+                self.selected_option_menu = (self.selected_option_menu + 1) % 3
             }
             _ => {}
         }
@@ -210,7 +238,7 @@ where
             };
         } else if self.selected_option_menu == 1 {
             if self.setpoint == Setpoint::Throttle {
-                self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(10.0);
+                self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(5.0);
             } else if self.setpoint == Setpoint::Thrust {
                 if self.thrust_setpoint < 10.0 {
                     self.thrust_setpoint = (self.thrust_setpoint - 0.1).max(0.1);
@@ -326,9 +354,9 @@ where
     }
 
     fn draw_border(&mut self) {
-        let _ = Rectangle::new(Point::new(0, 0), Size::new(127, 63))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(&mut self.display);
+        let border = Rectangle::new(Point::new(0, 0), Size::new(127, 63))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1));
+        let _ = border.draw(&mut self.display);
     }
 
     fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
@@ -386,13 +414,25 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
         throttle: f32,
+        dwt: Option<&DWT>,
     ) {
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
         self.clear();
-        self.draw_border();
+        rprintln!(
+            "Clear time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
+        rprintln!(
+            "Border time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
 
         let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let text_medium = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
         let text_small = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
 
         let mut display_str_force = String::<32>::new();
         let force_newtons = weight * self.force_unit_factor();
@@ -405,6 +445,12 @@ where
         let mut display_str_throttle = String::<32>::new();
         let _ = display_str_throttle.push_str("Thr: ");
         let _ = write!(display_str_throttle, "{:.0}{}", throttle, "%");
+
+        rprintln!(
+            "String time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
 
         if self.selected_option_test == 0 {
             let _ =
@@ -429,7 +475,19 @@ where
                 .draw(&mut self.display);
         }
 
+        rprintln!(
+            "Text time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
+
         self.draw_voltage(voltage, voltage_per_cell);
+
+        rprintln!(
+            "Voltage time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
+        let starttime = dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0);
 
         if let Some(time_left) = time_left {
             let mut display_str = String::<32>::new();
@@ -437,11 +495,15 @@ where
             let _ =
                 Text::new(&display_str, Point::new(65, 63 - 4), text_small).draw(&mut self.display);
         }
+
+        rprintln!(
+            "Time time: {}",
+            dwt.map(|dwt| dwt.cyccnt.read()).unwrap_or(0) - starttime
+        );
     }
 
     fn display_options(&mut self, voltage: f32, voltage_per_cell: f32) {
         self.clear();
-        self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
 
@@ -514,7 +576,6 @@ where
 
     fn display_settings(&mut self) {
         self.clear();
-        self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
 
@@ -548,7 +609,6 @@ where
 
     fn display_loading(&mut self) {
         self.clear();
-        self.draw_border();
 
         let box_size = 10;
         let bounds = self.display.bounding_box();
@@ -578,7 +638,6 @@ where
 
     fn display_offline(&mut self) {
         self.clear();
-        self.draw_border();
 
         let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let _ = Text::new("Sensor Offline", Point::new(10, 30), text_style).draw(&mut self.display);
@@ -586,7 +645,6 @@ where
 
     fn display_throttle(&mut self, throttle: f32, voltage: f32, voltage_per_cell: f32) {
         self.clear();
-        self.draw_border();
 
         let text_big = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 

@@ -46,7 +46,7 @@ where
     for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
                 let _ = ui.flush();
             }
         }
@@ -56,7 +56,7 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
                 let _ = ui.flush();
             }
         }
@@ -157,7 +157,7 @@ fn main() -> ! {
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0) {
+            if ui.render(0.0, 0.0, 0.0, 0.0, None, 0.0, None) {
                 let _ = ui.flush();
             }
         }
@@ -397,7 +397,6 @@ fn main() -> ! {
             if initial_state != button_start_state {
                 esc.send_throttle(throttle);
             }
-            //let render_start = dwt.cyccnt.read();
             let redraw = ui.render(
                 weight_val,
                 current_val,
@@ -405,21 +404,14 @@ fn main() -> ! {
                 v_per_cell,
                 time_left,
                 throttle,
+                Some(&dwt),
             );
             if initial_state != button_start_state {
                 esc.send_throttle(throttle);
             }
-            //let time_render = dwt.cyccnt.read() - render_start;
 
             if redraw {
-                //let flush_start = dwt.cyccnt.read();
                 let _ = ui.flush();
-                //let time_flush = dwt.cyccnt.read() - flush_start;
-                //rprintln!(
-                //    "Render time: {} cycles | Flush time: {} cycles",
-                //    time_render,
-                //    time_flush
-                //);
                 if initial_state != button_start_state {
                     esc.send_throttle(throttle);
                 }
