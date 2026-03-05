@@ -54,7 +54,7 @@ fn main() -> ! {
     // Show loading animation for ~2 seconds
     ui.set_loading();
     for _ in 0..100 {
-        ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+        ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
         ui.render_full();
         cortex_m::asm::delay(216_000_000 / 50); // ~50 FPS
     }
@@ -77,12 +77,12 @@ fn main() -> ! {
         if !sensor.disconnected {
             if let Ok(weight) = sensor.get_weight() {
                 ui.engine_on();
-                ui.update(weight, 0.0, 0.0, 0.0, None, 0.0, None);
+                ui.update(weight, 0.0, 0.0, 0.0, None, 0.0);
                 ui.render_full();
             }
         } else {
             ui.set_offline();
-            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
             sensor.probe();
         }

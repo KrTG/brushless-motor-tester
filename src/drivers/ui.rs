@@ -85,7 +85,7 @@ where
     pub min_voltage: f32,
     pub force_unit: ForceUnit,
     pub displayed_ui: DisplayedUi,
-    last_fingerprint: u64,
+    last_voltage: f32,
     dirty: bool,
     buffer: Deque<Op, 64>,
 }
@@ -111,7 +111,7 @@ where
             min_voltage: 3.6,
             force_unit: ForceUnit::Newton,
             displayed_ui: DisplayedUi::None,
-            last_fingerprint: 0,
+            last_voltage: 0.0,
             dirty: true,
             buffer: Deque::new(),
         }
@@ -150,23 +150,14 @@ where
         voltage_per_cell: f32,
         time_left: Option<f32>,
         throttle: f32,
-        dwt: Option<&DWT>,
     ) -> bool {
-        let v_comp = (voltage * 40.0) as u64;
-        let i_comp = (current * 4.0) as u64;
-        let thr_comp = throttle as u64;
-        let weight_hash = (weight * 100.0) as u64;
+        let voltage_changed = (voltage - self.last_voltage).abs() > 0.03;
 
-        let fingerprint = v_comp
-            ^ i_comp.wrapping_shl(12)
-            ^ thr_comp.wrapping_shl(24)
-            ^ weight_hash.wrapping_shl(36);
-
-        if !self.dirty && fingerprint == self.last_fingerprint {
+        if !self.dirty && !voltage_changed {
             return false;
         }
         self.dirty = false;
-        self.last_fingerprint = fingerprint;
+        self.last_voltage = voltage;
 
         let _ = self.buffer.push_back(Op::Clear);
         match self.displayed_ui {
@@ -180,7 +171,7 @@ where
                 voltage_per_cell,
                 time_left,
                 throttle,
-                dwt,
+                None,
             ),
             DisplayedUi::Offline => self.display_offline(),
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
@@ -523,6 +514,7 @@ where
         }
 
         self.draw_voltage(voltage, voltage_per_cell);
+        self.dirty = true;
     }
 
     fn display_test_configuration(&mut self, voltage: f32, voltage_per_cell: f32) {
@@ -719,5 +711,7 @@ where
             position: Point::new(4, 32),
         }));
         self.draw_voltage(voltage, voltage_per_cell);
+
+        self.dirty = true;
     }
 }

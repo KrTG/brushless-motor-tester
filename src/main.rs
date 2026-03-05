@@ -9,6 +9,7 @@ use drivers::m5weight;
 use drivers::ui;
 use drivers::voltage;
 
+use crate::drivers::ui::DisplayedUi;
 use crate::drivers::ui::Setpoint;
 use crate::input::Button;
 
@@ -44,7 +45,7 @@ where
     for i in 0..2000 {
         esc.send_stop();
         if i % 100 == 0 {
-            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
@@ -53,7 +54,7 @@ where
     for i in 0..1000 {
         esc.send_throttle(0.0);
         if i % 100 == 0 {
-            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
@@ -153,7 +154,7 @@ fn main() -> ! {
     esc_data_pin.set_low();
     for i in 0..3000 {
         if i % 100 == 0 {
-            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0, None);
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
@@ -316,14 +317,14 @@ fn main() -> ! {
                 }
                 if ui.setpoint == Setpoint::Throttle {
                     if throttle < ui.throttle_setpoint {
-                        throttle += if throttle < 25.0 { 0.6 } else { 3.0 };
+                        throttle += if throttle < 25.0 { 0.4 } else { 3.0 };
                     } else {
                         setpoint_reached = true;
                     }
                 } else if ui.setpoint == Setpoint::Current {
                     let current = current_sensor.get_current_abs();
                     if current < ui.current_setpoint - 0.5 {
-                        throttle += 0.6
+                        throttle += 0.4
                     } else if current < ui.current_setpoint - 0.2 {
                         throttle += 0.1
                     } else if current < ui.current_setpoint - 0.01 {
@@ -337,14 +338,14 @@ fn main() -> ! {
                         throttle -= 0.1
                     } else if current > ui.current_setpoint + 0.5 {
                         setpoint_reached = true;
-                        throttle -= 0.6
+                        throttle -= 0.4
                     } else {
                         setpoint_reached = true;
                     }
                 } else if ui.setpoint == Setpoint::Thrust {
                     let force = weight * ui.force_unit_factor();
                     if force < ui.thrust_setpoint - 0.2 {
-                        throttle += 0.6
+                        throttle += 0.4
                     } else if force < ui.thrust_setpoint - 0.05 {
                         throttle += 0.1
                     } else if force < ui.thrust_setpoint - 0.003 {
@@ -358,7 +359,7 @@ fn main() -> ! {
                         throttle -= 0.1
                     } else if force > ui.thrust_setpoint + 0.2 {
                         setpoint_reached = true;
-                        throttle -= 0.6
+                        throttle -= 0.4
                     } else {
                         setpoint_reached = true;
                     }
@@ -383,10 +384,10 @@ fn main() -> ! {
         }
 
         if time_ms - last_ui_update_ms
-            >= if initial_state == button_start_state {
-                151
-            } else {
+            >= if ui.displayed_ui == DisplayedUi::SensorReadings {
                 1000
+            } else {
+                100
             }
         {
             last_ui_update_ms = time_ms;
@@ -407,19 +408,10 @@ fn main() -> ! {
                 v_per_cell,
                 time_left,
                 throttle,
-                Some(&dwt),
             );
         }
 
-        if time_ms - last_print_ms >= 1291 {
-            last_print_ms = time_ms;
-            print_weight(&mut weight_sensor);
-            rprintln!(
-                "Voltage: {:.2} V ({:.2} V per cell) | Current: {:.2} A",
-                voltage_sensor.read(),
-                voltage_sensor.read_per_cell(),
-                current_sensor.get_current_abs()
-            );
+        if delta > CLOCK_CYCLES_PER_SECOND / 100 {
             rprintln!("Delta: {}", delta);
         }
     }
