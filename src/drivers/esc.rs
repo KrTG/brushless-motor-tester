@@ -74,28 +74,28 @@ impl EscController {
             4 => Command::Beep4,
             _ => Command::Beep5,
         };
-        self.send_command(cmd);
+        self.send_command(cmd, false);
     }
 
     /// Explicitly send a motor stop command
-    pub fn send_stop(&mut self) {
-        self.send_command(Command::MotorStop);
+    pub fn send_stop(&mut self, non_blocking: bool) {
+        self.send_command(Command::MotorStop, non_blocking);
     }
 
     /// Send a specific DShot command (0-47) using DMA
-    pub fn send_command(&mut self, command: Command) {
+    pub fn send_command(&mut self, command: Command, non_blocking: bool) {
         let frame = Frame::<NormalDshot>::command(command, false);
-        self.transmit_frame(frame)
+        self.transmit_frame(frame, non_blocking)
     }
 
     /// Sends a throttle command to the ESC using DMA.
-    pub fn send_throttle(&mut self, throttle_pct: f32) {
+    pub fn send_throttle(&mut self, throttle_pct: f32, non_blocking: bool) {
         let frame = self.create_throttle_frame(throttle_pct);
-        self.transmit_frame(frame)
+        self.transmit_frame(frame, non_blocking)
     }
 
     /// Internal helper to transmit any DShot frame via DMA
-    fn transmit_frame(&mut self, frame: Frame<NormalDshot>) {
+    fn transmit_frame(&mut self, frame: Frame<NormalDshot>, non_blocking: bool) {
         let tx_stream = &self.dma2.st[1]; // Use Stream 1 for TIM1_CH1
 
         // 1. Prepare Timer for Transmission
@@ -204,19 +204,21 @@ impl EscController {
             tim1.cr1.modify(|_, w| w.cen().set_bit());
         }
 
-        // Wait for DMA Complete
-        while self.dma2.lisr.read().tcif1().bit_is_clear() {
-            if self.dma2.lisr.read().teif1().bit_is_set() {
-                panic!("DMA TX Error");
+        // Wait for DMA Complete if blocking
+        if !non_blocking {
+            while self.dma2.lisr.read().tcif1().bit_is_clear() {
+                if self.dma2.lisr.read().teif1().bit_is_set() {
+                    panic!("DMA TX Error");
+                }
             }
-        }
 
-        // Cleanup
-        unsafe {
-            let tim1 = &*TIM1::ptr();
-            tim1.dier.modify(|_, w| w.cc1de().disabled());
-            tim1.cr1.modify(|_, w| w.cen().disabled());
-            tim1.ccr1().write(|w| w.bits(0));
+            // Cleanup only in blocking mode
+            unsafe {
+                let tim1 = &*TIM1::ptr();
+                tim1.dier.modify(|_, w| w.cc1de().disabled());
+                tim1.cr1.modify(|_, w| w.cen().disabled());
+                tim1.ccr1().write(|w| w.bits(0));
+            }
         }
     }
 

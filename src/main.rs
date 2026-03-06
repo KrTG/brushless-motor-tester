@@ -13,13 +13,15 @@ use crate::drivers::ui::DisplayedUi;
 use crate::drivers::ui::Setpoint;
 use crate::input::Button;
 
+use core::cell::RefCell;
+use cortex_m::interrupt::Mutex;
 use cortex_m_rt::entry;
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use stm32f7xx_hal::{
     adc::Adc,
-    pac::{self, ADC3},
+    pac::{self, ADC3, interrupt},
     prelude::*,
 };
 
@@ -34,6 +36,9 @@ const GAP_VALUE_GRAMS: f32 = 915.1742;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
 
+static G_ESC: Mutex<RefCell<Option<EscController>>> = Mutex::new(RefCell::new(None));
+static G_THROTTLE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(MIN_THROTTLE));
+
 fn arm_esc<DI, SIZE>(esc: &mut EscController, ui: &mut Ui<DI, SIZE>)
 where
     DI: ssd1306::prelude::WriteOnlyDataCommand,
@@ -43,7 +48,7 @@ where
     rprintln!("Sending MotorStop...");
     ui.set_loading();
     for i in 0..2000 {
-        esc.send_stop();
+        esc.send_stop(false);
         if i % 100 == 0 {
             ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
@@ -52,23 +57,13 @@ where
     }
     rprintln!("Sending Throttle 0...");
     for i in 0..1000 {
-        esc.send_throttle(0.0);
+        esc.send_throttle(0.0, false);
         if i % 100 == 0 {
             ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
             ui.render_full();
         }
         cortex_m::asm::delay(CLOCK_CYCLES_PER_SECOND / 1000);
     }
-}
-
-fn print_weight<I2C, E>(sensor: &mut M5Weight<I2C>)
-where
-    I2C: embedded_hal::blocking::i2c::Write<Error = E>
-        + embedded_hal::blocking::i2c::Read<Error = E>
-        + embedded_hal::blocking::i2c::WriteRead<Error = E>,
-{
-    let data = sensor.run_step();
-    rprintln!("Weight: {:.2}", data.force);
 }
 
 #[entry]
@@ -202,6 +197,20 @@ fn main() -> ! {
 
     arm_esc(&mut esc, &mut ui);
 
+    // After arming, move ESC to global static and start interrupt-driven updates
+    cortex_m::interrupt::free(|cs| {
+        *G_ESC.borrow(cs).borrow_mut() = Some(esc);
+    });
+
+    rprintln!("Starting ESC interrupt-driven updates (TIM3, 7ms interval)...");
+    let mut esc_timer = dp.TIM3.counter_hz(&clocks);
+    esc_timer.start(143.Hz()).unwrap(); // ~7ms interval
+    esc_timer.listen(stm32f7xx_hal::timer::Event::Update);
+
+    unsafe {
+        cortex_m::peripheral::NVIC::unmask(stm32f7xx_hal::pac::Interrupt::TIM3);
+    }
+
     match weight_sensor.init() {
         Ok(_) => rprintln!("Weight sensor initialized"),
         Err(e) => rprintln!("Failed to initialize weight sensor: {:?}", e),
@@ -228,7 +237,6 @@ fn main() -> ! {
     let mut throttle = MIN_THROTTLE;
     let mut last_ui_update_ms = 0;
     let mut last_ui_render_ms = 0;
-    let mut last_print_ms = 0;
     let mut last_esc_ms = 0;
     let mut ramp_up_ms = 0;
     let mut offset_done = false;
@@ -280,11 +288,10 @@ fn main() -> ! {
 
         if time_ms - last_esc_ms >= 7 {
             last_esc_ms = time_ms;
-            if throttle <= MIN_THROTTLE {
-                esc.send_throttle(0.0);
-            } else {
-                esc.send_throttle(throttle);
-            }
+            // Interrupt handler reads G_THROTTLE, so we just update it here
+            cortex_m::interrupt::free(|cs| {
+                *G_THROTTLE.borrow(cs).borrow_mut() = throttle;
+            });
         }
 
         if time_ms - last_ui_render_ms >= 15 {
@@ -414,5 +421,35 @@ fn main() -> ! {
         if delta > CLOCK_CYCLES_PER_SECOND / 100 {
             rprintln!("Delta: {}", delta);
         }
+    }
+}
+
+#[interrupt]
+fn TIM3() {
+    static mut LOCAL_ESC: Option<EscController> = None;
+
+    // Fetch the ESC instance on the first run
+    if LOCAL_ESC.is_none() {
+        cortex_m::interrupt::free(|cs| {
+            if let Some(esc) = G_ESC.borrow(cs).replace(None) {
+                *LOCAL_ESC = Some(esc);
+            }
+        });
+    }
+
+    if let Some(esc) = LOCAL_ESC.as_mut() {
+        // Read the current throttle calculated by the main loop
+        let throttle = cortex_m::interrupt::free(|cs| *G_THROTTLE.borrow(cs).borrow());
+
+        if throttle <= MIN_THROTTLE {
+            esc.send_throttle(0.0, true);
+        } else {
+            esc.send_throttle(throttle, true);
+        }
+    }
+
+    // Clear interrupt flag directly via registers
+    unsafe {
+        (*pac::TIM3::ptr()).sr.modify(|_, w| w.uif().clear());
     }
 }
