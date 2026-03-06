@@ -104,7 +104,7 @@ where
             selected_option_test: 0,
             setpoint: Setpoint::Throttle,
             throttle_setpoint: 5.0,
-            thrust_setpoint: 0.1,
+            thrust_setpoint: 0.05,
             current_setpoint: 0.4,
             timer_sec: 0.0,
             throttle_limit: 50.0,
@@ -263,10 +263,10 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(5.0);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 10.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint - 0.1).max(0.1);
+                if self.thrust_setpoint < 2.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint - 0.05).max(0.05);
                 } else {
-                    self.thrust_setpoint = (self.thrust_setpoint - 1.0).max(9.9);
+                    self.thrust_setpoint = (self.thrust_setpoint - 0.5).max(1.95);
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -313,10 +313,10 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(self.throttle_limit);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 10.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint + 0.1).min(10.0);
+                if self.thrust_setpoint < 2.0 {
+                    self.thrust_setpoint = (self.thrust_setpoint + 0.05).min(2.0);
                 } else {
-                    self.thrust_setpoint = (self.thrust_setpoint + 1.0).min(180.0);
+                    self.thrust_setpoint = (self.thrust_setpoint + 0.5).min(180.0);
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -424,7 +424,7 @@ where
     fn precision(&self) -> u32 {
         match self.setpoint {
             Setpoint::Throttle => 0,
-            Setpoint::Thrust => 1,
+            Setpoint::Thrust => 2,
             Setpoint::Current => 1,
             Setpoint::EngineRPM => 0,
             Setpoint::NoiseDB => 0,
@@ -527,40 +527,64 @@ where
 
         let mut display_str_setpoint = String::<32>::new();
         if self.selected_option_menu == 1 {
-            if self.precision() == 0 {
-                let _ = write!(
-                    display_str_setpoint,
-                    "< {}:{:.0}{} >",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            } else {
-                let _ = write!(
-                    display_str_setpoint,
-                    "< {}:{:.1}{} >",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
+            match self.precision() {
+                0 => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "< {}:{:.0}{} >",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
+                1 => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "< {}:{:.1}{} >",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
+                _ => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "< {}:{:.2}{} >",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
             }
         } else {
-            if self.precision() == 0 {
-                let _ = write!(
-                    display_str_setpoint,
-                    "  {}:{:.0}{}  ",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
-            } else {
-                let _ = write!(
-                    display_str_setpoint,
-                    "  {}:{:.1}{}  ",
-                    self.setpoint,
-                    self.get_setpoint(),
-                    self.unit()
-                );
+            match self.precision() {
+                0 => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "  {}:{:.0}{}  ",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
+                1 => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "  {}:{:.1}{}  ",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
+                _ => {
+                    let _ = write!(
+                        display_str_setpoint,
+                        "  {}:{:.2}{}  ",
+                        self.setpoint,
+                        self.get_setpoint(),
+                        self.unit()
+                    );
+                }
             }
         }
 
