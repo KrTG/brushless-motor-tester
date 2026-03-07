@@ -10,11 +10,15 @@ use heapless::{Deque, String};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use stm32f7xx_hal::pac::DWT;
 
+const MAIN_MENU_COUNT: u8 = 4;
+const SETTINGS_MENU_COUNT: u8 = 4;
+const SENSOR_MODES_COUNT: u8 = 3;
+
 #[derive(PartialEq, Clone, Copy)]
 pub enum DisplayedUi {
     None,
     Loading,
-    Options,
+    MainMenu,
     SensorReadings,
     Offline,
     Throttle,
@@ -34,6 +38,24 @@ pub enum Setpoint {
 pub enum ForceUnit {
     Gram,
     Newton,
+}
+
+impl ForceUnit {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ForceUnit::Gram => "g",
+            ForceUnit::Newton => "N",
+        }
+    }
+}
+
+impl core::fmt::Display for ForceUnit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ForceUnit::Gram => write!(f, "g"),
+            ForceUnit::Newton => write!(f, "N"),
+        }
+    }
 }
 
 struct OpDrawText {
@@ -163,7 +185,7 @@ where
         match self.displayed_ui {
             DisplayedUi::None => {}
             DisplayedUi::Loading => self.display_loading(),
-            DisplayedUi::Options => self.display_test_configuration(voltage, voltage_per_cell),
+            DisplayedUi::MainMenu => self.display_main_menu(voltage, voltage_per_cell),
             DisplayedUi::SensorReadings => self.display_sensor_readings(
                 weight,
                 current,
@@ -184,12 +206,14 @@ where
 
     pub fn down(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 4,
+            DisplayedUi::MainMenu => {
+                self.selected_option_menu = (self.selected_option_menu + 1) % MAIN_MENU_COUNT
+            }
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test + 1) % 3
+                self.selected_option_test = (self.selected_option_test + 1) % SENSOR_MODES_COUNT
             }
             DisplayedUi::Settings => {
-                self.selected_option_menu = (self.selected_option_menu + 1) % 3
+                self.selected_option_menu = (self.selected_option_menu + 1) % SETTINGS_MENU_COUNT
             }
             _ => {}
         }
@@ -198,30 +222,36 @@ where
 
     pub fn up(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.selected_option_menu = (self.selected_option_menu + 1) % 4,
+            DisplayedUi::MainMenu => {
+                self.selected_option_menu =
+                    (self.selected_option_menu + MAIN_MENU_COUNT - 1) % MAIN_MENU_COUNT
+            }
             DisplayedUi::SensorReadings => {
-                self.selected_option_test = (self.selected_option_test + 1) % 3;
+                self.selected_option_test =
+                    (self.selected_option_test + SENSOR_MODES_COUNT - 1) % SENSOR_MODES_COUNT;
             }
             DisplayedUi::Settings => {
-                self.selected_option_menu = (self.selected_option_menu + 1) % 3
+                self.selected_option_menu =
+                    (self.selected_option_menu + SETTINGS_MENU_COUNT - 1) % SETTINGS_MENU_COUNT
             }
             _ => {}
         }
         self.dirty = true;
     }
 
-    fn handle_settings_left(&mut self) {
-        if self.selected_option_menu == 0 {
-            self.throttle_limit = (self.throttle_limit - 5.0).max(10.0);
-        } else if self.selected_option_menu == 1 {
-            self.min_voltage = (self.min_voltage - 0.1).max(3.3);
-        }
-    }
-
     pub fn left(&mut self) {
         match self.displayed_ui {
-            DisplayedUi::Options => self.handle_options_left(),
+            DisplayedUi::MainMenu => self.handle_main_menu_left(),
             DisplayedUi::Settings => self.handle_settings_left(),
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    pub fn right(&mut self) {
+        match self.displayed_ui {
+            DisplayedUi::MainMenu => self.handle_main_menu_right(),
+            DisplayedUi::Settings => self.handle_settings_right(),
             _ => {}
         }
         self.dirty = true;
@@ -251,7 +281,7 @@ where
         }
     }
 
-    fn handle_options_left(&mut self) {
+    fn handle_main_menu_left(&mut self) {
         if self.selected_option_menu == 0 {
             self.setpoint = match self.setpoint {
                 Setpoint::Throttle => Setpoint::Current,
@@ -263,10 +293,21 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(5.0);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 2.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint - 0.05).max(0.05);
-                } else {
-                    self.thrust_setpoint = (self.thrust_setpoint - 0.5).max(1.95);
+                match self.force_unit {
+                    ForceUnit::Newton => {
+                        if self.thrust_setpoint < 2.0 {
+                            self.thrust_setpoint = (self.thrust_setpoint - 0.05).max(0.05);
+                        } else {
+                            self.thrust_setpoint = (self.thrust_setpoint - 0.5).max(1.95);
+                        }
+                    }
+                    ForceUnit::Gram => {
+                        if self.thrust_setpoint <= 200.0 {
+                            self.thrust_setpoint = (self.thrust_setpoint - 5.0).max(5.0);
+                        } else {
+                            self.thrust_setpoint = (self.thrust_setpoint - 50.0).max(200.0);
+                        }
+                    }
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -280,28 +321,7 @@ where
         }
     }
 
-    fn handle_settings_right(&mut self) {
-        if self.selected_option_menu == 0 {
-            self.throttle_limit = (self.throttle_limit + 5.0).min(100.0);
-        } else if self.selected_option_menu == 1 {
-            self.min_voltage = (self.min_voltage + 0.1).min(4.2);
-        } else {
-            // Exit back to main options
-            self.displayed_ui = DisplayedUi::Options;
-            self.selected_option_menu = 3; // Highlight Settings entry again
-        }
-    }
-
-    pub fn right(&mut self) {
-        match self.displayed_ui {
-            DisplayedUi::Options => self.handle_options_right(),
-            DisplayedUi::Settings => self.handle_settings_right(),
-            _ => {}
-        }
-        self.dirty = true;
-    }
-
-    fn handle_options_right(&mut self) {
+    fn handle_main_menu_right(&mut self) {
         if self.selected_option_menu == 0 {
             self.setpoint = match self.setpoint {
                 Setpoint::Throttle => Setpoint::Thrust,
@@ -313,10 +333,21 @@ where
             if self.setpoint == Setpoint::Throttle {
                 self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(self.throttle_limit);
             } else if self.setpoint == Setpoint::Thrust {
-                if self.thrust_setpoint < 2.0 {
-                    self.thrust_setpoint = (self.thrust_setpoint + 0.05).min(2.0);
-                } else {
-                    self.thrust_setpoint = (self.thrust_setpoint + 0.5).min(180.0);
+                match self.force_unit {
+                    ForceUnit::Newton => {
+                        if self.thrust_setpoint < 2.0 {
+                            self.thrust_setpoint = (self.thrust_setpoint + 0.05).min(2.0);
+                        } else {
+                            self.thrust_setpoint = (self.thrust_setpoint + 0.5).min(20.0);
+                        }
+                    }
+                    ForceUnit::Gram => {
+                        if self.thrust_setpoint < 200.0 {
+                            self.thrust_setpoint = (self.thrust_setpoint + 5.0).min(200.0);
+                        } else {
+                            self.thrust_setpoint = (self.thrust_setpoint + 50.0).min(2000.0);
+                        }
+                    }
                 }
             } else if self.setpoint == Setpoint::Current {
                 if self.current_setpoint < 5.0 {
@@ -330,6 +361,48 @@ where
         } else {
             self.displayed_ui = DisplayedUi::Settings;
             self.selected_option_menu = 0;
+        }
+    }
+
+    fn handle_settings_left(&mut self) {
+        if self.selected_option_menu == 0 {
+            self.throttle_limit = (self.throttle_limit - 5.0).max(10.0);
+        } else if self.selected_option_menu == 1 {
+            self.min_voltage = (self.min_voltage - 0.1).max(3.3);
+        } else if self.selected_option_menu == 2 {
+            match self.force_unit {
+                ForceUnit::Gram => {
+                    self.force_unit = ForceUnit::Newton;
+                    self.thrust_setpoint = 0.05;
+                }
+                ForceUnit::Newton => {
+                    self.force_unit = ForceUnit::Gram;
+                    self.thrust_setpoint = 5.0;
+                }
+            };
+        }
+    }
+
+    fn handle_settings_right(&mut self) {
+        if self.selected_option_menu == 0 {
+            self.throttle_limit = (self.throttle_limit + 5.0).min(100.0);
+        } else if self.selected_option_menu == 1 {
+            self.min_voltage = (self.min_voltage + 0.1).min(4.2);
+        } else if self.selected_option_menu == 2 {
+            match self.force_unit {
+                ForceUnit::Gram => {
+                    self.force_unit = ForceUnit::Newton;
+                    self.thrust_setpoint = 0.05;
+                }
+                ForceUnit::Newton => {
+                    self.force_unit = ForceUnit::Gram;
+                    self.thrust_setpoint = 5.0;
+                }
+            };
+        } else {
+            // Exit back to main menu
+            self.displayed_ui = DisplayedUi::MainMenu;
+            self.selected_option_menu = 3; // Highlight Settings entry again
         }
     }
 
@@ -349,7 +422,7 @@ where
             || self.displayed_ui == DisplayedUi::Loading
             || self.displayed_ui == DisplayedUi::None
         {
-            self.displayed_ui = DisplayedUi::Options;
+            self.displayed_ui = DisplayedUi::MainMenu;
             self.dirty = true;
         }
     }
@@ -414,7 +487,7 @@ where
     fn unit(&self) -> &str {
         match self.setpoint {
             Setpoint::Throttle => "%",
-            Setpoint::Thrust => "N",
+            Setpoint::Thrust => self.force_unit.as_str(),
             Setpoint::Current => "A",
             Setpoint::EngineRPM => "RPM",
             Setpoint::NoiseDB => "dB",
@@ -424,7 +497,10 @@ where
     fn precision(&self) -> u32 {
         match self.setpoint {
             Setpoint::Throttle => 0,
-            Setpoint::Thrust => 2,
+            Setpoint::Thrust => match self.force_unit {
+                ForceUnit::Gram => 0,
+                ForceUnit::Newton => 2,
+            },
             Setpoint::Current => 1,
             Setpoint::EngineRPM => 0,
             Setpoint::NoiseDB => 0,
@@ -442,8 +518,15 @@ where
         _dwt: Option<&DWT>,
     ) {
         let mut display_str_force = String::<32>::new();
-        let force_newtons = weight * self.force_unit_factor();
-        let _ = write!(display_str_force, "F: {:.2}N", force_newtons);
+        let force = weight * self.force_unit_factor();
+        match self.force_unit {
+            ForceUnit::Gram => {
+                let _ = write!(display_str_force, "F: {:.0}{}", force, self.force_unit);
+            }
+            ForceUnit::Newton => {
+                let _ = write!(display_str_force, "F: {:.2}{}", force, self.force_unit);
+            }
+        }
 
         let mut display_str_current = String::<32>::new();
         let _ = display_str_current.push_str("I: ");
@@ -517,7 +600,7 @@ where
         self.dirty = true;
     }
 
-    fn display_test_configuration(&mut self, voltage: f32, voltage_per_cell: f32) {
+    fn display_main_menu(&mut self, voltage: f32, voltage_per_cell: f32) {
         let mut display_str_menu = String::<32>::new();
         if self.selected_option_menu == 0 {
             let _ = write!(display_str_menu, "< Set:{} >", self.setpoint);
@@ -661,9 +744,16 @@ where
             );
         }
 
-        // 3. Exit
-        let mut display_str_exit = String::<32>::new();
+        // 3. Force unit
+        let mut display_str_force_unit = String::<32>::new();
         if self.selected_option_menu == 2 {
+            let _ = write!(display_str_force_unit, "< F unit: {} >", self.force_unit);
+        } else {
+            let _ = write!(display_str_force_unit, "  F unit: {}  ", self.force_unit);
+        }
+
+        let mut display_str_exit = String::<32>::new();
+        if self.selected_option_menu == 3 {
             let _ = write!(display_str_exit, "  Exit >");
         } else {
             let _ = write!(display_str_exit, "  Exit  ");
@@ -679,9 +769,14 @@ where
             position: Point::new(4, 15 + 12),
         }));
         let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
-            text: display_str_exit,
+            text: display_str_force_unit,
             fontsize: 8,
             position: Point::new(4, 15 + 24),
+        }));
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str_exit,
+            fontsize: 8,
+            position: Point::new(4, 15 + 36),
         }));
     }
 

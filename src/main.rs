@@ -370,21 +370,22 @@ fn main() -> ! {
                         setpoint_reached = true;
                     }
                 } else if ui.setpoint == Setpoint::Thrust {
-                    let force = weight * ui.force_unit_factor();
-                    if force < ui.thrust_setpoint - 0.2 {
+                    let force_grams = weight;
+                    let setpoint_grams = ui.thrust_setpoint / ui.force_unit_factor();
+                    if force_grams < setpoint_grams - 20.0 {
                         throttle += 0.4
-                    } else if force < ui.thrust_setpoint - 0.05 {
+                    } else if force_grams < setpoint_grams - 3.0 {
                         throttle += 0.1
-                    } else if force < ui.thrust_setpoint - 0.003 {
+                    } else if force_grams < setpoint_grams - 0.3 {
                         setpoint_reached = true;
                         throttle += 0.03
-                    } else if force > ui.thrust_setpoint + 0.003 {
+                    } else if force_grams > setpoint_grams + 0.3 {
                         setpoint_reached = true;
                         throttle -= 0.01
-                    } else if force > ui.thrust_setpoint + 0.05 {
+                    } else if force_grams > setpoint_grams + 3.0 {
                         setpoint_reached = true;
                         throttle -= 0.1
-                    } else if force > ui.thrust_setpoint + 0.2 {
+                    } else if force_grams > setpoint_grams + 20.0 {
                         setpoint_reached = true;
                         throttle -= 0.4
                     } else {
