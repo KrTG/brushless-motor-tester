@@ -262,6 +262,7 @@ fn main() -> ! {
     let mut offset_done = false;
     let mut weight = 0.0;
     let mut last_weight_ms = 0;
+    let mut setpoint_reached = false;
 
     loop {
         let current_ticks = dwt.cyccnt.read();
@@ -298,10 +299,7 @@ fn main() -> ! {
             ui.left();
         }
 
-        if (voltage_sensor.is_low() || initial_state == button_start_state)
-            && throttle <= MIN_THROTTLE
-        {
-        } else if initial_state != button_start_state && throttle >= ui.throttle_setpoint {
+        if initial_state != button_start_state && setpoint_reached {
             if ui.timer_sec > 0.0 {
                 if let Some(start_time) = timer_start_ms {
                     if time_ms - start_time >= (ui.timer_sec * 1000.0) as u32 {
@@ -325,7 +323,6 @@ fn main() -> ! {
         }
 
         if time_ms - ramp_up_ms >= 50 {
-            let mut setpoint_reached = false;
             ramp_up_ms = time_ms;
             if voltage_sensor.is_low() || voltage_sensor.is_unplugged() {
                 initial_state = button_start_state;
@@ -337,6 +334,7 @@ fn main() -> ! {
                 if throttle > MIN_THROTTLE {
                     throttle -= if throttle < 25.0 { 0.6 } else { 3.0 };
                 }
+                setpoint_reached = false;
             } else {
                 if !offset_done {
                     let _ = weight_sensor.set_offset();
