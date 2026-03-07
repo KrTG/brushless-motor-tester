@@ -6,6 +6,7 @@ pub struct Button<P> {
     start_time_ms: u32,
     last_impulse_duration_ms: u32,
     repeat_interval_ms: u32,
+    pulses: u32,
 }
 
 impl<P: InputPin> Button<P> {
@@ -16,12 +17,12 @@ impl<P: InputPin> Button<P> {
             start_time_ms: 0,
             last_impulse_duration_ms: 0,
             repeat_interval_ms,
+            pulses: 0,
         }
     }
 
-    /// Update the button state and return 1 if an impulse occurred, 0 otherwise.
-    pub fn update(&mut self, now_ms: u32) -> u32 {
-        let mut impulse = 0;
+    /// Update the button state and internal pulses.
+    pub fn update(&mut self, now_ms: u32) {
         // Pins are usually pulled up, so low means pressed.
         let is_low = self.pin.is_low().ok().unwrap_or(false);
 
@@ -38,16 +39,16 @@ impl<P: InputPin> Button<P> {
                 // Impulse logic:
                 // 1. Short press (once at 40ms)
                 if duration >= 40 && self.last_impulse_duration_ms < 40 {
-                    impulse = 1;
+                    self.pulses += 1;
                     self.last_impulse_duration_ms = 40;
                 }
                 // 2. Long press (once at 300ms, then every repeat_interval_ms)
                 else if duration >= 1000 {
                     if self.last_impulse_duration_ms < 1000 {
-                        impulse = 1;
+                        self.pulses += 1;
                         self.last_impulse_duration_ms = 1000;
                     } else if duration - self.last_impulse_duration_ms >= self.repeat_interval_ms {
-                        impulse = 1;
+                        self.pulses += 1;
                         self.last_impulse_duration_ms += self.repeat_interval_ms;
                     }
                 }
@@ -58,12 +59,18 @@ impl<P: InputPin> Button<P> {
             self.start_time_ms = 0;
             self.last_impulse_duration_ms = 0;
         }
-        impulse
+    }
+
+    /// Returns the number of pulses since the last call and resets the counter.
+    pub fn get_and_reset_pulses(&mut self) -> u32 {
+        let p = self.pulses;
+        self.pulses = 0;
+        p
     }
 
     /// Returns true if the button is currently pressed.
-    pub fn is_pressed(&self) -> bool {
-        self.is_pressed
+    pub fn probe(&self) -> bool {
+        self.pin.is_low().ok().unwrap_or(false)
     }
 
     /// Returns the duration the button has been pressed in milliseconds.

@@ -30,6 +30,21 @@ use crate::esc::EscController;
 use crate::m5weight::{DEVICE_DEFAULT_ADDR, M5Weight};
 use crate::ui::Ui;
 use crate::voltage::VoltageSensor;
+use stm32f7xx_hal::gpio::{
+    Input, PullUp,
+    gpioc::{PC0, PC3},
+    gpiof::PF3,
+};
+
+type ButtonDown = Button<PC0<Input<PullUp>>>;
+type ButtonRight = Button<PC3<Input<PullUp>>>;
+type ButtonLeft = Button<PF3<Input<PullUp>>>;
+
+struct ButtonSet {
+    down: ButtonDown,
+    right: ButtonRight,
+    left: ButtonLeft,
+}
 
 const DSHOT_HERTZ: u32 = 150_000;
 const GAP_VALUE_GRAMS: f32 = 915.1742;
@@ -38,6 +53,7 @@ const MIN_THROTTLE: f32 = 3.0;
 
 static G_ESC: Mutex<RefCell<Option<EscController>>> = Mutex::new(RefCell::new(None));
 static G_THROTTLE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(MIN_THROTTLE));
+static G_BUTTONS: Mutex<RefCell<Option<ButtonSet>>> = Mutex::new(RefCell::new(None));
 
 fn arm_esc<DI, SIZE>(esc: &mut EscController, ui: &mut Ui<DI, SIZE>)
 where
@@ -197,12 +213,19 @@ fn main() -> ! {
 
     arm_esc(&mut esc, &mut ui);
 
-    // After arming, move ESC to global static and start interrupt-driven updates
+    let buttons = ButtonSet {
+        down: button_down,
+        right: button_right,
+        left: button_left,
+    };
+
+    // After arming, move ESC and buttons to global static and start interrupt-driven updates
     cortex_m::interrupt::free(|cs| {
         *G_ESC.borrow(cs).borrow_mut() = Some(esc);
+        *G_BUTTONS.borrow(cs).borrow_mut() = Some(buttons);
     });
 
-    rprintln!("Starting ESC interrupt-driven updates (TIM3, 7ms interval)...");
+    rprintln!("Starting interrupt-driven updates (TIM3, 7ms interval, ESC + Buttons)...");
     let mut esc_timer = dp.TIM3.counter_hz(&clocks);
     esc_timer.start(143.Hz()).unwrap(); // ~7ms interval
     esc_timer.listen(stm32f7xx_hal::timer::Event::Update);
@@ -229,15 +252,12 @@ fn main() -> ! {
     let mut accumulator: u32 = 0;
     let mut time_ms: u32 = 0;
 
-    button_start.update(0);
-    rprintln!("Button start state: {}", button_start.is_pressed());
-    let mut initial_state = button_start.is_pressed();
+    let mut initial_state = button_start.probe();
     let mut timer_start_ms: Option<u32> = None;
 
     let mut throttle = MIN_THROTTLE;
     let mut last_ui_update_ms = 0;
     let mut last_ui_render_ms = 0;
-    let mut last_esc_ms = 0;
     let mut ramp_up_ms = 0;
     let mut offset_done = false;
     let mut weight = 0.0;
@@ -253,12 +273,20 @@ fn main() -> ! {
             accumulator -= ticks_per_ms;
             time_ms += 1;
         }
+        let button_start_state = button_start.probe();
 
-        button_start.update(time_ms);
-        let button_start_state = button_start.is_pressed();
-        let button_down_pulses = button_down.update(time_ms);
-        let button_right_pulses = button_right.update(time_ms);
-        let button_left_pulses = button_left.update(time_ms);
+        let (button_down_pulses, button_right_pulses, button_left_pulses) =
+            cortex_m::interrupt::free(|cs| {
+                if let Some(btns) = G_BUTTONS.borrow(cs).borrow_mut().as_mut() {
+                    let d = btns.down.get_and_reset_pulses();
+                    let r = btns.right.get_and_reset_pulses();
+                    let l = btns.left.get_and_reset_pulses();
+                    (d, r, l)
+                } else {
+                    (0, 0, 0)
+                }
+            });
+
         voltage_sensor.sample(time_ms);
         current_sensor.sample(time_ms);
 
@@ -284,14 +312,6 @@ fn main() -> ! {
                     timer_start_ms = Some(time_ms);
                 }
             }
-        }
-
-        if time_ms - last_esc_ms >= 7 {
-            last_esc_ms = time_ms;
-            // Interrupt handler reads G_THROTTLE, so we just update it here
-            cortex_m::interrupt::free(|cs| {
-                *G_THROTTLE.borrow(cs).borrow_mut() = throttle;
-            });
         }
 
         if time_ms - last_ui_render_ms >= 15 {
@@ -376,6 +396,10 @@ fn main() -> ! {
                 throttle = ui.throttle_limit;
             }
 
+            cortex_m::interrupt::free(|cs| {
+                *G_THROTTLE.borrow(cs).borrow_mut() = throttle;
+            });
+
             if setpoint_reached {
                 ui.engine_on();
             } else if throttle > MIN_THROTTLE {
@@ -427,8 +451,9 @@ fn main() -> ! {
 #[interrupt]
 fn TIM3() {
     static mut LOCAL_ESC: Option<EscController> = None;
+    static mut TIME_MS: u32 = 0;
 
-    // Fetch the ESC instance on the first run
+    // Fetch ESC on first run
     if LOCAL_ESC.is_none() {
         cortex_m::interrupt::free(|cs| {
             if let Some(esc) = G_ESC.borrow(cs).replace(None) {
@@ -437,6 +462,11 @@ fn TIM3() {
         });
     }
 
+    // Increment time (TIM3 is ~143Hz, so ~7ms per interrupt)
+    *TIME_MS = TIME_MS.wrapping_add(7);
+    let now_ms = *TIME_MS;
+
+    // Handle ESC
     if let Some(esc) = LOCAL_ESC.as_mut() {
         // Read the current throttle calculated by the main loop
         let throttle = cortex_m::interrupt::free(|cs| *G_THROTTLE.borrow(cs).borrow());
@@ -447,6 +477,15 @@ fn TIM3() {
             esc.send_throttle(throttle, true);
         }
     }
+
+    // Handle Buttons (Keep them in G_BUTTONS so main can access them)
+    cortex_m::interrupt::free(|cs| {
+        if let Some(btns) = G_BUTTONS.borrow(cs).borrow_mut().as_mut() {
+            btns.down.update(now_ms);
+            btns.right.update(now_ms);
+            btns.left.update(now_ms);
+        }
+    });
 
     // Clear interrupt flag directly via registers
     unsafe {
