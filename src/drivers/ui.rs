@@ -23,6 +23,7 @@ pub enum DisplayedUi {
     Offline,
     Throttle,
     Settings,
+    Rebooting,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -34,6 +35,7 @@ pub enum Setpoint {
     NoiseDB,
 }
 
+#[repr(u32)]
 #[derive(PartialEq, Clone, Copy)]
 pub enum ForceUnit {
     Gram,
@@ -88,6 +90,24 @@ impl core::fmt::Display for Setpoint {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct TestOptions {
+    pub setpoint: Setpoint,
+    pub throttle_setpoint: f32,
+    pub thrust_setpoint: f32,
+    pub current_setpoint: f32,
+    pub timer_sec: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Settings {
+    pub magic: u32,
+    pub throttle_limit: f32,
+    pub min_voltage: f32,
+    pub force_unit: ForceUnit,
+}
+
 pub struct Ui<DI, SIZE>
 where
     DI: WriteOnlyDataCommand,
@@ -98,18 +118,13 @@ where
     box_vel: Point,
     selected_option_menu: u8,
     selected_option_test: u8,
-    pub setpoint: Setpoint,
-    pub throttle_setpoint: f32,
-    pub thrust_setpoint: f32,
-    pub current_setpoint: f32,
-    pub timer_sec: f32,
-    pub throttle_limit: f32,
-    pub min_voltage: f32,
-    pub force_unit: ForceUnit,
+    pub test_options: TestOptions,
+    pub settings: Settings,
     pub displayed_ui: DisplayedUi,
     last_voltage: f32,
     dirty: bool,
     buffer: Deque<Op, 64>,
+    pub save_requested: bool,
 }
 
 impl<DI, SIZE> Ui<DI, SIZE>
@@ -124,23 +139,29 @@ where
             box_vel: Point::new(8, 4),
             selected_option_menu: 0,
             selected_option_test: 0,
-            setpoint: Setpoint::Throttle,
-            throttle_setpoint: 5.0,
-            thrust_setpoint: 0.05,
-            current_setpoint: 0.4,
-            timer_sec: 0.0,
-            throttle_limit: 50.0,
-            min_voltage: 3.6,
-            force_unit: ForceUnit::Newton,
+            test_options: TestOptions {
+                setpoint: Setpoint::Throttle,
+                throttle_setpoint: 5.0,
+                thrust_setpoint: 0.05,
+                current_setpoint: 0.4,
+                timer_sec: 0.0,
+            },
+            settings: Settings {
+                magic: 0,
+                throttle_limit: 50.0,
+                min_voltage: 3.6,
+                force_unit: ForceUnit::Newton,
+            },
             displayed_ui: DisplayedUi::None,
             last_voltage: 0.0,
             dirty: true,
             buffer: Deque::new(),
+            save_requested: false,
         }
     }
 
     pub fn force_unit_factor(&self) -> f32 {
-        match self.force_unit {
+        match self.settings.force_unit {
             ForceUnit::Gram => 1.0,
             ForceUnit::Newton => 0.00980665,
         }
@@ -198,6 +219,7 @@ where
             DisplayedUi::Offline => self.display_offline(),
             DisplayedUi::Throttle => self.display_throttle(throttle, voltage, voltage_per_cell),
             DisplayedUi::Settings => self.display_settings(),
+            DisplayedUi::Rebooting => self.display_rebooting(),
         }
         let _ = self.buffer.push_back(Op::Flush);
 
@@ -283,81 +305,95 @@ where
 
     fn handle_main_menu_left(&mut self) {
         if self.selected_option_menu == 0 {
-            self.setpoint = match self.setpoint {
+            self.test_options.setpoint = match self.test_options.setpoint {
                 Setpoint::Throttle => Setpoint::Current,
                 Setpoint::Thrust => Setpoint::Throttle,
                 Setpoint::Current => Setpoint::Thrust,
                 _ => Setpoint::Throttle,
             };
         } else if self.selected_option_menu == 1 {
-            if self.setpoint == Setpoint::Throttle {
-                self.throttle_setpoint = (self.throttle_setpoint - 1.0).max(5.0);
-            } else if self.setpoint == Setpoint::Thrust {
-                match self.force_unit {
+            if self.test_options.setpoint == Setpoint::Throttle {
+                self.test_options.throttle_setpoint =
+                    (self.test_options.throttle_setpoint - 1.0).max(5.0);
+            } else if self.test_options.setpoint == Setpoint::Thrust {
+                match self.settings.force_unit {
                     ForceUnit::Newton => {
-                        if self.thrust_setpoint < 2.0 {
-                            self.thrust_setpoint = (self.thrust_setpoint - 0.05).max(0.05);
+                        if self.test_options.thrust_setpoint < 2.0 {
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint - 0.05).max(0.05);
                         } else {
-                            self.thrust_setpoint = (self.thrust_setpoint - 0.5).max(1.95);
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint - 0.5).max(1.95);
                         }
                     }
                     ForceUnit::Gram => {
-                        if self.thrust_setpoint <= 200.0 {
-                            self.thrust_setpoint = (self.thrust_setpoint - 5.0).max(5.0);
+                        if self.test_options.thrust_setpoint <= 200.0 {
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint - 5.0).max(5.0);
                         } else {
-                            self.thrust_setpoint = (self.thrust_setpoint - 50.0).max(200.0);
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint - 50.0).max(200.0);
                         }
                     }
                 }
-            } else if self.setpoint == Setpoint::Current {
-                if self.current_setpoint < 5.0 {
-                    self.current_setpoint = (self.current_setpoint - 0.2).max(0.4);
+            } else if self.test_options.setpoint == Setpoint::Current {
+                if self.test_options.current_setpoint < 5.0 {
+                    self.test_options.current_setpoint =
+                        (self.test_options.current_setpoint - 0.2).max(0.4);
                 } else {
-                    self.current_setpoint = (self.current_setpoint - 1.0).max(4.8);
+                    self.test_options.current_setpoint =
+                        (self.test_options.current_setpoint - 1.0).max(4.8);
                 }
             }
         } else {
-            self.timer_sec = (self.timer_sec - 1.0).max(0.0);
+            self.test_options.timer_sec = (self.test_options.timer_sec - 1.0).max(0.0);
         }
     }
 
     fn handle_main_menu_right(&mut self) {
         if self.selected_option_menu == 0 {
-            self.setpoint = match self.setpoint {
+            self.test_options.setpoint = match self.test_options.setpoint {
                 Setpoint::Throttle => Setpoint::Thrust,
                 Setpoint::Thrust => Setpoint::Current,
                 Setpoint::Current => Setpoint::Throttle,
                 _ => Setpoint::Throttle,
             };
         } else if self.selected_option_menu == 1 {
-            if self.setpoint == Setpoint::Throttle {
-                self.throttle_setpoint = (self.throttle_setpoint + 1.0).min(self.throttle_limit);
-            } else if self.setpoint == Setpoint::Thrust {
-                match self.force_unit {
+            if self.test_options.setpoint == Setpoint::Throttle {
+                self.test_options.throttle_setpoint =
+                    (self.test_options.throttle_setpoint + 1.0).min(self.settings.throttle_limit);
+            } else if self.test_options.setpoint == Setpoint::Thrust {
+                match self.settings.force_unit {
                     ForceUnit::Newton => {
-                        if self.thrust_setpoint < 2.0 {
-                            self.thrust_setpoint = (self.thrust_setpoint + 0.05).min(2.0);
+                        if self.test_options.thrust_setpoint < 2.0 {
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint + 0.05).min(2.0);
                         } else {
-                            self.thrust_setpoint = (self.thrust_setpoint + 0.5).min(20.0);
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint + 0.5).min(20.0);
                         }
                     }
                     ForceUnit::Gram => {
-                        if self.thrust_setpoint < 200.0 {
-                            self.thrust_setpoint = (self.thrust_setpoint + 5.0).min(200.0);
+                        if self.test_options.thrust_setpoint < 200.0 {
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint + 5.0).min(200.0);
                         } else {
-                            self.thrust_setpoint = (self.thrust_setpoint + 50.0).min(2000.0);
+                            self.test_options.thrust_setpoint =
+                                (self.test_options.thrust_setpoint + 50.0).min(2000.0);
                         }
                     }
                 }
-            } else if self.setpoint == Setpoint::Current {
-                if self.current_setpoint < 5.0 {
-                    self.current_setpoint = (self.current_setpoint + 0.2).min(5.0);
+            } else if self.test_options.setpoint == Setpoint::Current {
+                if self.test_options.current_setpoint < 5.0 {
+                    self.test_options.current_setpoint =
+                        (self.test_options.current_setpoint + 0.2).min(5.0);
                 } else {
-                    self.current_setpoint = (self.current_setpoint + 1.0).min(20.0);
+                    self.test_options.current_setpoint =
+                        (self.test_options.current_setpoint + 1.0).min(20.0);
                 }
             }
         } else if self.selected_option_menu == 2 {
-            self.timer_sec = (self.timer_sec + 1.0).min(60.0);
+            self.test_options.timer_sec = (self.test_options.timer_sec + 1.0).min(60.0);
         } else {
             self.displayed_ui = DisplayedUi::Settings;
             self.selected_option_menu = 0;
@@ -366,18 +402,18 @@ where
 
     fn handle_settings_left(&mut self) {
         if self.selected_option_menu == 0 {
-            self.throttle_limit = (self.throttle_limit - 5.0).max(10.0);
+            self.settings.throttle_limit = (self.settings.throttle_limit - 5.0).max(10.0);
         } else if self.selected_option_menu == 1 {
-            self.min_voltage = (self.min_voltage - 0.1).max(3.3);
+            self.settings.min_voltage = (self.settings.min_voltage - 0.1).max(3.3);
         } else if self.selected_option_menu == 2 {
-            match self.force_unit {
+            match self.settings.force_unit {
                 ForceUnit::Gram => {
-                    self.force_unit = ForceUnit::Newton;
-                    self.thrust_setpoint = 0.05;
+                    self.settings.force_unit = ForceUnit::Newton;
+                    self.test_options.thrust_setpoint = 0.05;
                 }
                 ForceUnit::Newton => {
-                    self.force_unit = ForceUnit::Gram;
-                    self.thrust_setpoint = 5.0;
+                    self.settings.force_unit = ForceUnit::Gram;
+                    self.test_options.thrust_setpoint = 5.0;
                 }
             };
         }
@@ -385,24 +421,24 @@ where
 
     fn handle_settings_right(&mut self) {
         if self.selected_option_menu == 0 {
-            self.throttle_limit = (self.throttle_limit + 5.0).min(100.0);
+            self.settings.throttle_limit = (self.settings.throttle_limit + 5.0).min(100.0);
         } else if self.selected_option_menu == 1 {
-            self.min_voltage = (self.min_voltage + 0.1).min(4.2);
+            self.settings.min_voltage = (self.settings.min_voltage + 0.1).min(4.2);
         } else if self.selected_option_menu == 2 {
-            match self.force_unit {
+            match self.settings.force_unit {
                 ForceUnit::Gram => {
-                    self.force_unit = ForceUnit::Newton;
-                    self.thrust_setpoint = 0.05;
+                    self.settings.force_unit = ForceUnit::Newton;
+                    self.test_options.thrust_setpoint = 0.05;
                 }
                 ForceUnit::Newton => {
-                    self.force_unit = ForceUnit::Gram;
-                    self.thrust_setpoint = 5.0;
+                    self.settings.force_unit = ForceUnit::Gram;
+                    self.test_options.thrust_setpoint = 5.0;
                 }
             };
-        } else {
-            // Exit back to main menu
-            self.displayed_ui = DisplayedUi::MainMenu;
-            self.selected_option_menu = 3; // Highlight Settings entry again
+        } else if self.selected_option_menu == 3 {
+            self.save_requested = true;
+            self.displayed_ui = DisplayedUi::Rebooting;
+            self.dirty = true;
         }
     }
 
@@ -456,7 +492,7 @@ where
     }
 
     fn draw_voltage(&mut self, voltage: f32, voltage_per_cell: f32) {
-        let postfix = if voltage_per_cell < self.min_voltage {
+        let postfix = if voltage_per_cell < self.settings.min_voltage {
             "!!"
         } else if voltage_per_cell < 3.7 {
             "!"
@@ -475,19 +511,19 @@ where
     }
 
     fn get_setpoint(&self) -> f32 {
-        match self.setpoint {
-            Setpoint::Throttle => self.throttle_setpoint,
-            Setpoint::Thrust => self.thrust_setpoint,
-            Setpoint::Current => self.current_setpoint,
-            Setpoint::EngineRPM => self.timer_sec,
-            Setpoint::NoiseDB => self.timer_sec,
+        match self.test_options.setpoint {
+            Setpoint::Throttle => self.test_options.throttle_setpoint,
+            Setpoint::Thrust => self.test_options.thrust_setpoint,
+            Setpoint::Current => self.test_options.current_setpoint,
+            Setpoint::EngineRPM => self.test_options.timer_sec,
+            Setpoint::NoiseDB => self.test_options.timer_sec,
         }
     }
 
     fn unit(&self) -> &str {
-        match self.setpoint {
+        match self.test_options.setpoint {
             Setpoint::Throttle => "%",
-            Setpoint::Thrust => self.force_unit.as_str(),
+            Setpoint::Thrust => self.settings.force_unit.as_str(),
             Setpoint::Current => "A",
             Setpoint::EngineRPM => "RPM",
             Setpoint::NoiseDB => "dB",
@@ -495,9 +531,9 @@ where
     }
 
     fn precision(&self) -> u32 {
-        match self.setpoint {
+        match self.test_options.setpoint {
             Setpoint::Throttle => 0,
-            Setpoint::Thrust => match self.force_unit {
+            Setpoint::Thrust => match self.settings.force_unit {
                 ForceUnit::Gram => 0,
                 ForceUnit::Newton => 2,
             },
@@ -519,12 +555,20 @@ where
     ) {
         let mut display_str_force = String::<32>::new();
         let force = weight * self.force_unit_factor();
-        match self.force_unit {
+        match self.settings.force_unit {
             ForceUnit::Gram => {
-                let _ = write!(display_str_force, "F: {:.0}{}", force, self.force_unit);
+                let _ = write!(
+                    display_str_force,
+                    "F: {:.0}{}",
+                    force, self.settings.force_unit
+                );
             }
             ForceUnit::Newton => {
-                let _ = write!(display_str_force, "F: {:.2}{}", force, self.force_unit);
+                let _ = write!(
+                    display_str_force,
+                    "F: {:.2}{}",
+                    force, self.settings.force_unit
+                );
             }
         }
 
@@ -603,9 +647,9 @@ where
     fn display_main_menu(&mut self, voltage: f32, voltage_per_cell: f32) {
         let mut display_str_menu = String::<32>::new();
         if self.selected_option_menu == 0 {
-            let _ = write!(display_str_menu, "< Set:{} >", self.setpoint);
+            let _ = write!(display_str_menu, "< Set:{} >", self.test_options.setpoint);
         } else {
-            let _ = write!(display_str_menu, "  Set:{}  ", self.setpoint);
+            let _ = write!(display_str_menu, "  Set:{}  ", self.test_options.setpoint);
         }
 
         let mut display_str_setpoint = String::<32>::new();
@@ -615,7 +659,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "< {}:{:.0}{} >",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -624,7 +668,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "< {}:{:.1}{} >",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -633,7 +677,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "< {}:{:.2}{} >",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -645,7 +689,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "  {}:{:.0}{}  ",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -654,7 +698,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "  {}:{:.1}{}  ",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -663,7 +707,7 @@ where
                     let _ = write!(
                         display_str_setpoint,
                         "  {}:{:.2}{}  ",
-                        self.setpoint,
+                        self.test_options.setpoint,
                         self.get_setpoint(),
                         self.unit()
                     );
@@ -673,9 +717,17 @@ where
 
         let mut display_str_timer = String::<32>::new();
         if self.selected_option_menu == 2 {
-            let _ = write!(display_str_timer, "< Timer:{}s >", self.timer_sec);
+            let _ = write!(
+                display_str_timer,
+                "< Timer:{}s >",
+                self.test_options.timer_sec
+            );
         } else {
-            let _ = write!(display_str_timer, "  Timer:{}s  ", self.timer_sec);
+            let _ = write!(
+                display_str_timer,
+                "  Timer:{}s  ",
+                self.test_options.timer_sec
+            );
         }
 
         let mut display_str_settings = String::<32>::new();
@@ -718,13 +770,13 @@ where
             let _ = write!(
                 display_str_throttle_limit,
                 "< Thr lim:{}% >",
-                self.throttle_limit
+                self.settings.throttle_limit
             );
         } else {
             let _ = write!(
                 display_str_throttle_limit,
                 "  Thr lim:{}%  ",
-                self.throttle_limit
+                self.settings.throttle_limit
             );
         }
 
@@ -734,22 +786,30 @@ where
             let _ = write!(
                 display_str_min_voltage,
                 "< Min V:{:.1}V >",
-                self.min_voltage
+                self.settings.min_voltage
             );
         } else {
             let _ = write!(
                 display_str_min_voltage,
                 "  Min V:{:.1}V  ",
-                self.min_voltage
+                self.settings.min_voltage
             );
         }
 
         // 3. Force unit
         let mut display_str_force_unit = String::<32>::new();
         if self.selected_option_menu == 2 {
-            let _ = write!(display_str_force_unit, "< F unit: {} >", self.force_unit);
+            let _ = write!(
+                display_str_force_unit,
+                "< F unit: {} >",
+                self.settings.force_unit
+            );
         } else {
-            let _ = write!(display_str_force_unit, "  F unit: {}  ", self.force_unit);
+            let _ = write!(
+                display_str_force_unit,
+                "  F unit: {}  ",
+                self.settings.force_unit
+            );
         }
 
         let mut display_str_exit = String::<32>::new();
@@ -758,6 +818,7 @@ where
         } else {
             let _ = write!(display_str_exit, "  Exit  ");
         }
+
         let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
             text: display_str_throttle_limit,
             fontsize: 8,
@@ -807,6 +868,17 @@ where
         }));
 
         self.dirty = true;
+    }
+
+    fn display_rebooting(&mut self) {
+        let mut display_str = String::<32>::new();
+        let _ = write!(display_str, "Rebooting...");
+
+        let _ = self.buffer.push_back(Op::DrawText(OpDrawText {
+            text: display_str,
+            fontsize: 10,
+            position: Point::new(4, 32),
+        }));
     }
 
     fn display_offline(&mut self) {

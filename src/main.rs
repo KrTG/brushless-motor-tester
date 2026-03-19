@@ -55,6 +55,37 @@ static G_ESC: Mutex<RefCell<Option<EscController>>> = Mutex::new(RefCell::new(No
 static G_THROTTLE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(MIN_THROTTLE));
 static G_BUTTONS: Mutex<RefCell<Option<ButtonSet>>> = Mutex::new(RefCell::new(None));
 
+const SETTINGS_MAGIC: u32 = 0x544F_4D53; // "SMOT"
+const SETTINGS_SECTOR: u8 = 11;
+const SETTINGS_OFFSET: usize = 0x1C_0000;
+const SETTINGS_FLASH_ADDR: usize = 0x0800_0000 + SETTINGS_OFFSET;
+
+fn load_settings_from_flash() -> Option<crate::drivers::ui::Settings> {
+    let loaded_config = unsafe { &*(SETTINGS_FLASH_ADDR as *const crate::drivers::ui::Settings) };
+    if loaded_config.magic == SETTINGS_MAGIC {
+        Some(*loaded_config)
+    } else {
+        None
+    }
+}
+
+fn save_settings_to_flash(
+    flash: &mut stm32f7xx_hal::flash::Flash,
+    settings: &mut crate::drivers::ui::Settings,
+) {
+    settings.magic = SETTINGS_MAGIC;
+    let config_bytes = unsafe {
+        core::slice::from_raw_parts(
+            settings as *const crate::drivers::ui::Settings as *const u8,
+            core::mem::size_of::<crate::drivers::ui::Settings>(),
+        )
+    };
+    flash.unlock();
+    let _ = flash.blocking_erase_sector(SETTINGS_SECTOR);
+    let _ = flash.blocking_program(SETTINGS_OFFSET, config_bytes);
+    flash.lock();
+}
+
 fn arm_esc<DI, SIZE>(esc: &mut EscController, ui: &mut Ui<DI, SIZE>)
 where
     DI: ssd1306::prelude::WriteOnlyDataCommand,
@@ -89,6 +120,8 @@ fn main() -> ! {
 
     let cp = pac::CorePeripherals::take().expect("Failed to take CorePeripherals");
     let dp = pac::Peripherals::take().expect("Failed to take Peripherals");
+
+    let mut flash = stm32f7xx_hal::flash::Flash::new(dp.FLASH);
 
     // Initialize Hardware Timer (DWT)
     let mut dcb = cp.DCB;
@@ -158,6 +191,14 @@ fn main() -> ! {
     let display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
     let mut ui = Ui::new(display);
+
+    if let Some(saved_settings) = load_settings_from_flash() {
+        ui.settings = saved_settings;
+        rprintln!("Loaded settings from flash!");
+    } else {
+        rprintln!("No valid settings found in flash, using defaults.");
+    }
+
     ui.init().unwrap();
 
     rprintln!("Set PE9 LOW, waiting 3 seconds...");
@@ -192,8 +233,15 @@ fn main() -> ! {
     rprintln!("Calibrated VDDA: {:.3} V", vdda);
 
     let adc3 = Adc::<ADC3>::adc3(dp.ADC3, &mut rcc.apb2, &clocks, 12, false);
-    let mut voltage_sensor =
-        VoltageSensor::<_, _, 20>::new(adc3, voltage_pin, 11.0, None, 100, vdda, ui.min_voltage);
+    let mut voltage_sensor = VoltageSensor::<_, _, 20>::new(
+        adc3,
+        voltage_pin,
+        11.0,
+        None,
+        100,
+        vdda,
+        ui.settings.min_voltage,
+    );
 
     let mut current_sensor = current::CurrentSensor::<_, _, 150>::new(
         adc1,
@@ -225,7 +273,9 @@ fn main() -> ! {
         *G_BUTTONS.borrow(cs).borrow_mut() = Some(buttons);
     });
 
-    rprintln!("Starting interrupt-driven updates (TIM3 for ESC at 143Hz, TIM4 for Buttons at 1kHz)...");
+    rprintln!(
+        "Starting interrupt-driven updates (TIM3 for ESC at 143Hz, TIM4 for Buttons at 1kHz)..."
+    );
     let mut esc_timer = dp.TIM3.counter_hz(&clocks);
     esc_timer.start(143.Hz()).unwrap(); // ~7ms interval
     esc_timer.listen(stm32f7xx_hal::timer::Event::Update);
@@ -268,6 +318,7 @@ fn main() -> ! {
     let mut weight = 0.0;
     let mut last_weight_ms = 0;
     let mut setpoint_reached = false;
+    let throttle_limit = ui.settings.throttle_limit;
 
     loop {
         let current_ticks = dwt.cyccnt.read();
@@ -305,9 +356,9 @@ fn main() -> ! {
         }
 
         if initial_state != button_start_state && setpoint_reached {
-            if ui.timer_sec > 0.0 {
+            if ui.test_options.timer_sec > 0.0 {
                 if let Some(start_time) = timer_start_ms {
-                    if time_ms - start_time >= (ui.timer_sec * 1000.0) as u32 {
+                    if time_ms - start_time >= (ui.test_options.timer_sec * 1000.0) as u32 {
                         initial_state = button_start_state;
                         timer_start_ms = None;
                     }
@@ -345,36 +396,36 @@ fn main() -> ! {
                     let _ = weight_sensor.set_offset();
                     offset_done = true;
                 }
-                if ui.setpoint == Setpoint::Throttle {
-                    if throttle < ui.throttle_setpoint {
+                if ui.test_options.setpoint == Setpoint::Throttle {
+                    if throttle < ui.test_options.throttle_setpoint {
                         throttle += if throttle < 25.0 { 0.4 } else { 3.0 };
                     } else {
                         setpoint_reached = true;
                     }
-                } else if ui.setpoint == Setpoint::Current {
+                } else if ui.test_options.setpoint == Setpoint::Current {
                     let current = current_sensor.get_current_abs();
-                    if current < ui.current_setpoint - 0.5 {
+                    if current < ui.test_options.current_setpoint - 0.5 {
                         throttle += 0.4
-                    } else if current < ui.current_setpoint - 0.2 {
+                    } else if current < ui.test_options.current_setpoint - 0.2 {
                         throttle += 0.1
-                    } else if current < ui.current_setpoint - 0.01 {
+                    } else if current < ui.test_options.current_setpoint - 0.01 {
                         setpoint_reached = true;
                         throttle += 0.03
-                    } else if current > ui.current_setpoint + 0.01 {
+                    } else if current > ui.test_options.current_setpoint + 0.01 {
                         setpoint_reached = true;
                         throttle -= 0.01
-                    } else if current > ui.current_setpoint + 0.2 {
+                    } else if current > ui.test_options.current_setpoint + 0.2 {
                         setpoint_reached = true;
                         throttle -= 0.1
-                    } else if current > ui.current_setpoint + 0.5 {
+                    } else if current > ui.test_options.current_setpoint + 0.5 {
                         setpoint_reached = true;
                         throttle -= 0.4
                     } else {
                         setpoint_reached = true;
                     }
-                } else if ui.setpoint == Setpoint::Thrust {
+                } else if ui.test_options.setpoint == Setpoint::Thrust {
                     let force_grams = weight;
-                    let setpoint_grams = ui.thrust_setpoint / ui.force_unit_factor();
+                    let setpoint_grams = ui.test_options.thrust_setpoint / ui.force_unit_factor();
                     if force_grams < setpoint_grams - 20.0 {
                         throttle += 0.4
                     } else if force_grams < setpoint_grams - 3.0 {
@@ -396,8 +447,8 @@ fn main() -> ! {
                     }
                 }
             }
-            if throttle > ui.throttle_limit {
-                throttle = ui.throttle_limit;
+            if throttle > throttle_limit {
+                throttle = throttle_limit;
             }
 
             cortex_m::interrupt::free(|cs| {
@@ -429,7 +480,7 @@ fn main() -> ! {
 
             let time_left = timer_start_ms.map(|start_time| {
                 let elapsed = (time_ms - start_time) as f32 / 1000.0;
-                (ui.timer_sec - elapsed).max(0.0)
+                (ui.test_options.timer_sec - elapsed).max(0.0)
             });
             let weight_val = weight;
             let current_val = current_sensor.get_current_abs();
@@ -444,6 +495,15 @@ fn main() -> ! {
                 time_left,
                 throttle,
             );
+        }
+
+        if ui.save_requested {
+            ui.save_requested = false;
+            ui.update(0.0, 0.0, 0.0, 0.0, None, 0.0);
+            ui.render_full();
+            save_settings_to_flash(&mut flash, &mut ui.settings);
+            rprintln!("Settings saved to flash! Rebooting...");
+            cortex_m::peripheral::SCB::sys_reset();
         }
 
         if delta > CLOCK_CYCLES_PER_SECOND / 100 {
