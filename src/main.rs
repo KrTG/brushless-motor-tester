@@ -225,13 +225,18 @@ fn main() -> ! {
         *G_BUTTONS.borrow(cs).borrow_mut() = Some(buttons);
     });
 
-    rprintln!("Starting interrupt-driven updates (TIM3, 7ms interval, ESC + Buttons)...");
+    rprintln!("Starting interrupt-driven updates (TIM3 for ESC at 143Hz, TIM4 for Buttons at 1kHz)...");
     let mut esc_timer = dp.TIM3.counter_hz(&clocks);
     esc_timer.start(143.Hz()).unwrap(); // ~7ms interval
     esc_timer.listen(stm32f7xx_hal::timer::Event::Update);
 
+    let mut button_timer = dp.TIM4.counter_hz(&clocks);
+    button_timer.start(1.kHz()).unwrap(); // 1ms interval
+    button_timer.listen(stm32f7xx_hal::timer::Event::Update);
+
     unsafe {
         cortex_m::peripheral::NVIC::unmask(stm32f7xx_hal::pac::Interrupt::TIM3);
+        cortex_m::peripheral::NVIC::unmask(stm32f7xx_hal::pac::Interrupt::TIM4);
     }
 
     match weight_sensor.init() {
@@ -450,7 +455,6 @@ fn main() -> ! {
 #[interrupt]
 fn TIM3() {
     static mut LOCAL_ESC: Option<EscController> = None;
-    static mut TIME_MS: u32 = 0;
 
     // Fetch ESC on first run
     if LOCAL_ESC.is_none() {
@@ -460,10 +464,6 @@ fn TIM3() {
             }
         });
     }
-
-    // Increment time (TIM3 is ~143Hz, so ~7ms per interrupt)
-    *TIME_MS = TIME_MS.wrapping_add(7);
-    let now_ms = *TIME_MS;
 
     // Handle ESC
     if let Some(esc) = LOCAL_ESC.as_mut() {
@@ -477,7 +477,21 @@ fn TIM3() {
         }
     }
 
-    // Handle Buttons (Keep them in G_BUTTONS so main can access them)
+    // Clear interrupt flag directly via registers
+    unsafe {
+        (*pac::TIM3::ptr()).sr.modify(|_, w| w.uif().clear());
+    }
+}
+
+#[interrupt]
+fn TIM4() {
+    static mut TIME_MS: u32 = 0;
+
+    // Increment time (TIM4 is 1kHz, so 1ms per interrupt)
+    *TIME_MS = TIME_MS.wrapping_add(1);
+    let now_ms = *TIME_MS;
+
+    // Handle Buttons
     cortex_m::interrupt::free(|cs| {
         if let Some(btns) = G_BUTTONS.borrow(cs).borrow_mut().as_mut() {
             btns.down.update(now_ms);
@@ -488,6 +502,6 @@ fn TIM3() {
 
     // Clear interrupt flag directly via registers
     unsafe {
-        (*pac::TIM3::ptr()).sr.modify(|_, w| w.uif().clear());
+        (*pac::TIM4::ptr()).sr.modify(|_, w| w.uif().clear());
     }
 }

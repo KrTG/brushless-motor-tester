@@ -3,6 +3,8 @@ use embedded_hal::digital::v2::InputPin;
 pub struct Button<P> {
     pin: P,
     is_pressed: bool,
+    last_raw_state: bool,
+    last_bounce_time_ms: u32,
     start_time_ms: u32,
     last_impulse_duration_ms: u32,
     repeat_interval_ms: u32,
@@ -14,6 +16,8 @@ impl<P: InputPin> Button<P> {
         Self {
             pin,
             is_pressed: false,
+            last_raw_state: false,
+            last_bounce_time_ms: 0,
             start_time_ms: 0,
             last_impulse_duration_ms: 0,
             repeat_interval_ms,
@@ -25,39 +29,49 @@ impl<P: InputPin> Button<P> {
     pub fn update(&mut self, now_ms: u32) {
         // Pins are usually pulled up, so low means pressed.
         let is_low = self.pin.is_low().ok().unwrap_or(false);
+        const DEBOUNCE_DELAY_MS: u32 = 20;
 
-        if is_low {
-            if !self.is_pressed {
-                // Initial press detect
-                self.is_pressed = true;
-                self.start_time_ms = now_ms;
-                self.last_impulse_duration_ms = 0;
-            } else {
-                // Button is being held
-                let duration = now_ms.wrapping_sub(self.start_time_ms);
+        // If the physical pin state changes, mark the time of the bounce
+        if is_low != self.last_raw_state {
+            self.last_bounce_time_ms = now_ms;
+            self.last_raw_state = is_low;
+        }
 
-                // Impulse logic:
-                // 1. Short press (once at 40ms)
-                if duration >= 40 && self.last_impulse_duration_ms < 40 {
+        // If the physical state has been stable longer than the debounce delay
+        if now_ms.wrapping_sub(self.last_bounce_time_ms) >= DEBOUNCE_DELAY_MS {
+            // And if this debounced state is different from our current logical state
+            if is_low != self.is_pressed {
+                self.is_pressed = is_low;
+
+                if self.is_pressed {
+                    // Button has been cleanly pressed
                     self.pulses += 1;
-                    self.last_impulse_duration_ms = 40;
-                }
-                // 2. Long press (once at 300ms, then every repeat_interval_ms)
-                else if duration >= 1000 {
-                    if self.last_impulse_duration_ms < 1000 {
-                        self.pulses += 1;
-                        self.last_impulse_duration_ms = 1000;
-                    } else if duration - self.last_impulse_duration_ms >= self.repeat_interval_ms {
-                        self.pulses += 1;
-                        self.last_impulse_duration_ms += self.repeat_interval_ms;
-                    }
+                    self.start_time_ms = now_ms;
+                    self.last_impulse_duration_ms = 0;
+                } else {
+                    // Button has been cleanly released
+                    self.start_time_ms = 0;
+                    self.last_impulse_duration_ms = 0;
                 }
             }
-        } else {
-            // Button is released
-            self.is_pressed = false;
-            self.start_time_ms = 0;
-            self.last_impulse_duration_ms = 0;
+        }
+
+        // If the button is currently being held down securely
+        if self.is_pressed {
+            let duration = now_ms.wrapping_sub(self.start_time_ms);
+
+            // Handle press-and-hold repeating (once at 1000ms, then every repeat_interval_ms)
+            if duration >= 1000 {
+                if self.last_impulse_duration_ms < 1000 {
+                    self.pulses += 1;
+                    self.last_impulse_duration_ms = 1000;
+                } else if duration.wrapping_sub(self.last_impulse_duration_ms)
+                    >= self.repeat_interval_ms
+                {
+                    self.pulses += 1;
+                    self.last_impulse_duration_ms += self.repeat_interval_ms;
+                }
+            }
         }
     }
 
