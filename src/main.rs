@@ -51,6 +51,8 @@ const GAP_VALUE_GRAMS: f32 = 915.1742;
 const CLOCK_CYCLES_PER_SECOND: u32 = 216_000_000;
 const MIN_THROTTLE: f32 = 3.0;
 
+const ALLOW_UNPLUGGED: bool = false;
+
 static G_ESC: Mutex<RefCell<Option<EscController>>> = Mutex::new(RefCell::new(None));
 static G_THROTTLE: Mutex<RefCell<f32>> = Mutex::new(RefCell::new(MIN_THROTTLE));
 static G_BUTTONS: Mutex<RefCell<Option<ButtonSet>>> = Mutex::new(RefCell::new(None));
@@ -380,7 +382,7 @@ fn main() -> ! {
 
         if time_ms - ramp_up_ms >= 50 {
             ramp_up_ms = time_ms;
-            if voltage_sensor.is_low() || voltage_sensor.is_unplugged() {
+            if voltage_sensor.is_low() || (!ALLOW_UNPLUGGED && voltage_sensor.is_unplugged()) {
                 initial_state = button_start_state;
             }
 
